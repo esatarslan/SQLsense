@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <Metadata>
+    <Identity Id="SQLsense.5f2f5e8e-d716-419b-abcc-2f3b9c8d7e6f" Version="1.0.0" Language="en-US" Publisher="SQLsense Team" />
+    <DisplayName>SQLsense</DisplayName>
+    <Description xml:space="preserve">Intelligent query assistant and formatting tool for SQL Server Management Studio.</Description>
+    <MoreInfo>https://github.com/sqlsense/sqlsense</MoreInfo>
+    <License>LICENSE.txt</License>
+    <Icon>Resources\Icon.png</Icon>
+  </Metadata>
+  <Installation>
+    <!-- Target SSMS 20/22. SSMS uses isolated shell of VS15/17/22. SSMS 20/22 is based on VS2022 -> v17.0+ -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0, 18.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0, 18.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+  <Dependencies>
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.8,)" />
+  </Dependencies>
+  <Prerequisites>
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[17.0,)" DisplayName="Visual Studio core editor" />
+  </Prerequisites>
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />
+    <Asset Type="Microsoft.VisualStudio.MefComponent" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%|" />
+  </Assets>
+</PackageManifest>

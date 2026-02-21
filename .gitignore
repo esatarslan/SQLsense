@@ -1,0 +1,43 @@
+
+## Visual Studio 2022 / VSIX Specific
+.vs/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.vsix
+*.pkgdef
+!SQLsense/SQLsense.pkgdef
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+bld/
+[Bb]in/
+[Oo]bj/
+
+## VSSDK/VSIX extras
+*.vsixmanifest
+!SQLsense/source.extension.vsixmanifest
+TestResults/
+*.pfx
+*.publishsettings
+
+## NuGet
+packages/
+*.nuget.props
+*.nuget.targets
+
+## OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+## Temporary/Cache files
+*.log
+*.tmp
+*.cache

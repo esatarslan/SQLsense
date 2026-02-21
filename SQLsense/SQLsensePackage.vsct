@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+
+  <Commands package="guidSQLsensePackage">
+    
+    <Menus>
+      <!-- Sub-menu inside the Tools menu -->
+      <Menu guid="guidSQLsenseCmdSet" id="TopLevelMenu" priority="0x0700" type="Menu">
+        <Parent guid="guidSQLsenseCmdSet" id="ToolsAnchorGroup" />
+        <Strings>
+          <ButtonText>SQLsense</ButtonText>
+          <CommandName>SQLsense</CommandName>
+        </Strings>
+      </Menu>
+    </Menus>
+
+    <Groups>
+      <!-- Anchor group placed directly into the standard 'Tools' menu -->
+      <Group guid="guidSQLsenseCmdSet" id="ToolsAnchorGroup" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" />
+      </Group>
+
+      <!-- Sub-group inside our new 'SQLsense' Menu -->
+      <Group guid="guidSQLsenseCmdSet" id="MyMenuGroup" priority="0x0100">
+        <Parent guid="guidSQLsenseCmdSet" id="TopLevelMenu" />
+      </Group>
+    </Groups>
+
+    <Buttons>
+      <!-- A test button inside our Menu Group -->
+      <Button guid="guidSQLsenseCmdSet" id="cmdidTestCommand" priority="0x0100" type="Button">
+        <Parent guid="guidSQLsenseCmdSet" id="MyMenuGroup" />
+        <Strings>
+          <ButtonText>Format SQL (Test)</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+
+  <Symbols>
+    <!-- The GUID of the AsyncPackage -->
+    <GuidSymbol name="guidSQLsensePackage" value="{7A1D2C3B-4E5F-6A7B-8C9D-0E1F2A3B4C5D}" />
+
+    <!-- The GUID for our Command Set (UI Elements) -->
+    <GuidSymbol name="guidSQLsenseCmdSet" value="{b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e}">
+      <IDSymbol name="ToolsAnchorGroup" value="0x1022" />
+      <IDSymbol name="TopLevelMenu" value="0x1021" />
+      <IDSymbol name="MyMenuGroup" value="0x1020" />
+      <IDSymbol name="cmdidTestCommand" value="0x0100" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>
