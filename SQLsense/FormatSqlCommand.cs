@@ -71,12 +71,13 @@ namespace SQLsense
             }
 
             // Format the SQL Text
-            var formatter = new SqlFormatter();
+            Core.ISqlFormatter formatter = new SqlFormatter();
             var formattedSql = formatter.Format(sqlText, out var errors);
 
             if (errors != null && errors.Count > 0)
             {
                 string errorMsg = $"Found {errors.Count} syntax errors!\n\nFirst error: {errors[0].Message} at Line {errors[0].Line}, Column {errors[0].Column}";
+                Infrastructure.OutputWindowLogger.Log(errorMsg);
                 ShowMessage(errorMsg, OLEMSGICON.OLEMSGICON_WARNING);
                 return;
             }
@@ -89,6 +90,7 @@ namespace SQLsense
                 {
                     // Replace the entire buffer from start to end
                     textLines.ReplaceLines(0, 0, lastLine, lastIndex, pText, formattedSql.Length, null);
+                    Infrastructure.OutputWindowLogger.Log("Manual formatting applied successfully.");
                 }
                 finally
                 {
@@ -97,6 +99,7 @@ namespace SQLsense
             }
             else
             {
+                Infrastructure.OutputWindowLogger.Log("Formatting failed for an unknown reason.");
                 ShowMessage("Formatting failed for an unknown reason.", OLEMSGICON.OLEMSGICON_WARNING);
             }
         }

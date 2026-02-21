@@ -50,6 +50,10 @@
     <Compile Include="SqlFormatter.cs" />
     <Compile Include="EditorCommandFilter.cs" />
     <Compile Include="EditorViewCreationListener.cs" />
+    <Compile Include="Core\ISqlFormatter.cs" />
+    <Compile Include="Core\SqlFormatterOptions.cs" />
+    <Compile Include="Core\KeywordManager.cs" />
+    <Compile Include="Infrastructure\OutputWindowLogger.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="source.extension.vsixmanifest">

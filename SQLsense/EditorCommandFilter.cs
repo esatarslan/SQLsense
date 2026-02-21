@@ -5,13 +5,15 @@ using Microsoft.VisualStudio.OLE.Interop;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Text.Editor;
 using Microsoft.VisualStudio.TextManager.Interop;
+using SQLsense.Core;
+using SQLsense.Infrastructure;
 
 namespace SQLsense
 {
     internal class EditorCommandFilter : IOleCommandTarget
     {
         private readonly IWpfTextView _textView;
-        private readonly SqlFormatter _formatter;
+        private readonly ISqlFormatter _formatter;
         internal IOleCommandTarget _nextCommandTarget;
 
         public EditorCommandFilter(IWpfTextView textView)
@@ -54,26 +56,6 @@ namespace SQLsense
             return hresult;
         }
 
-        private static readonly string[] SqlKeywords = { 
-            "ADD", "ALL", "ALTER", "AND", "ANY", "AS", "ASC", "AUTHORIZATION", "BACKUP", "BEGIN", "BETWEEN", "BREAK", "BROWSE", "BULK", "BY", 
-            "CASCADE", "CASE", "CHECK", "CHECKPOINT", "CLOSE", "CLUSTERED", "COALESCE", "COLLATE", "COLUMN", "COMMIT", "COMPUTE", "CONSTRAINT", 
-            "CONTAINS", "CONTAINSTABLE", "CONTINUE", "CONVERT", "CREATE", "CROSS", "CURRENT", "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", 
-            "CURRENT_USER", "CURSOR", "DATABASE", "DBCC", "DEALLOCATE", "DECLARE", "DEFAULT", "DELETE", "DENY", "DESC", "DISK", "DISTINCT", 
-            "DISTRIBUTED", "DOUBLE", "DROP", "DUMMY", "DUMP", "ELSE", "END", "ERRLVL", "EXCEPT", "EXEC", "EXECUTE", "EXISTS", "EXIT", "FETCH", 
-            "FILE", "FILLFACTOR", "FOR", "FOREIGN", "FREETEXT", "FREETEXTTABLE", "FROM", "FULL", "FUNCTION", "GOTO", "GRANT", "GROUP", "HAVING", 
-            "HOLDLOCK", "IDENTITY", "IDENTITY_INSERT", "IDENTITYCOL", "IF", "IN", "INDEX", "INNER", "INSERT", "INTERSECT", "INTO", "IS", "JOIN", 
-            "KEY", "KILL", "LEFT", "LIKE", "LINENO", "LOAD", "NATIONAL", "NOCHECK", "NONCLUSTERED", "NOT", "NULL", "NULLIF", "OF", "OFF", 
-            "OFFSETS", "ON", "OPEN", "OPENDATASOURCE", "OPENQUERY", "OPENROWSET", "OPENXML", "OPTION", "OR", "ORDER", "OUTER", "OVER", 
-            "PERCENT", "PLAN", "PRECISION", "PRIMARY", "PRINT", "PROC", "PROCEDURE", "PUBLIC", "RAISERROR", "READ", "READTEXT", "RECONFIGURE", 
-            "REFERENCES", "REPLICATION", "RESTORE", "RESTRICT", "RETURN", "REVOKE", "RIGHT", "ROLLBACK", "ROWCOUNT", "ROWGUIDCOL", "RULE", 
-            "SAVE", "SCHEMA", "SELECT", "SESSION_USER", "SET", "SETUSER", "SHUTDOWN", "SOME", "STATISTICS", "SYSTEM_USER", "TABLE", "TEXTSIZE", 
-            "THEN", "TO", "TOP", "TRAN", "TRANSACTION", "TRIGGER", "TRUNCATE", "TSEQUAL", "UNION", "UNIQUE", "UPDATE", "UPDATETEXT", "USE", 
-            "USER", "VALUES", "VARYING", "VIEW", "WAITFOR", "WHEN", "WHERE", "WHILE", "WITH",
-            "VARCHAR", "NVARCHAR", "INT", "BIGINT", "SMALLINT", "TINYINT", "BIT", "DECIMAL", "NUMERIC", "MONEY", "SMALLMONEY", "FLOAT", 
-            "REAL", "DATETIME", "DATETIME2", "DATETIMEOFFSET", "DATE", "TIME", "CHAR", "NCHAR", "BINARY", "VARBINARY", "IMAGE", "TEXT", 
-            "NTEXT", "XML", "MAX", "GO", "PIVOT", "UNPIVOT", "MERGE", "OUTPUT", "USE"
-        };
-
         private async System.Threading.Tasks.Task FormatCurrentContextAsync()
         {
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -95,17 +77,17 @@ namespace SQLsense
                 // 1. Immediate Keyword Casing (SQL Prompt Style)
                 if (!string.IsNullOrEmpty(lastWord))
                 {
-                    foreach (var keyword in SqlKeywords)
+                    if (KeywordManager.IsKeyword(lastWord))
                     {
-                        if (string.Equals(lastWord, keyword, StringComparison.OrdinalIgnoreCase) && lastWord != keyword.ToUpperInvariant())
+                        string casedWord = KeywordManager.GetCasedKeyword(lastWord);
+                        if (lastWord != casedWord)
                         {
                             int wordStart = (lastSpaceIndex == -1 ? line.Start.Position : line.Start.Position + lastSpaceIndex + 1);
                             using (var edit = textBuffer.CreateEdit())
                             {
-                                edit.Replace(wordStart, lastWord.Length, keyword.ToUpperInvariant());
+                                edit.Replace(wordStart, lastWord.Length, casedWord);
                                 edit.Apply();
                             }
-                            return; // Wait for next trigger for full formatting
                         }
                     }
                 }
@@ -117,7 +99,6 @@ namespace SQLsense
 
                 var formattedSql = _formatter.Format(currentFullText, out var errors);
 
-                // Only apply if there are no errors (we don't want to format broken syntax in real-time)
                 if (formattedSql != null && formattedSql != currentFullText)
                 {
                     using (var edit = textBuffer.CreateEdit())
@@ -128,9 +109,9 @@ namespace SQLsense
                 }
                 */
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Fail silently
+                OutputWindowLogger.LogError("Real-time casing failed", ex);
             }
         }
     }

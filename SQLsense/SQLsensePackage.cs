@@ -5,7 +5,7 @@ using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Task = System.Threading.Tasks.Task;
 
-namespace SQLsense.Package
+namespace SQLsense
 {
     [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
     [ProvideAutoLoad(VSConstants.UICONTEXT.NoSolution_string, PackageAutoLoadFlags.BackgroundLoad)]
@@ -19,6 +19,10 @@ namespace SQLsense.Package
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
             await this.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+            
+            Infrastructure.OutputWindowLogger.Initialize(this);
+            Infrastructure.OutputWindowLogger.Log("SQLsense Package Initialized.");
+            
             await FormatSqlCommand.InitializeAsync(this);
         }
     }

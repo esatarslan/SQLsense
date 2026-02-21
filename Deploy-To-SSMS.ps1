@@ -16,7 +16,10 @@ $sourceDir = "$PSScriptRoot\SQLsense\bin\Debug"
 
 Write-Host "Deploying $extensionName to $targetDir..." -ForegroundColor Cyan
 
-if (-Not (Test-Path $targetDir)) {
+if (Test-Path $targetDir) {
+    Write-Host "Cleaning up old extension files..." -ForegroundColor Yellow
+    Remove-Item -Path "$targetDir\*" -Force -Recurse
+} else {
     New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
     Write-Host "Created target directory."
 }
