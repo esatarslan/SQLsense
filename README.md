@@ -16,13 +16,12 @@ SQLsense, SQL Server Management Studio (SSMS) 22 için geliştirilmiş, gelişti
 - **Output Window:** SSMS içinde "SQLsense" özel çıktı penceresi üzerinden anlık loglama ve hata takibi.
 - **Modern Mimari:** Temiz kod ve sürdürülebilir katmanlı mimari (Core & Infrastructure).
 
+### 4 Akıllı Kısayollar & Snippets (Phase 3)
+- **Özel Kısayollar:** Örneğin `ssf` yazıp Tab'a bastığınızda otomatik olarak `SELECT * FROM ` bloğunun gelmesi.
+
 ---
 
 ## 🗺️ Gelecek Özellikler & Yol Haritası (Roadmap)
-
-### ⚡ Phase 3: Akıllı Kısayollar & Snippets
-- **Özel Kısayollar:** Örneğin `ssf` yazıp Tab'a bastığınızda otomatik olarak `SELECT * FROM ` bloğunun gelmesi.
-- **Trigger Swallowing:** Kısayol genişlediğinde sondaki fazladan boşlukların otomatik temizlenmesi.
 
 ### ⚙️ Phase 4: Gelişmiş Ayarlar Ekranı (Settings UI)
 - **Özelleştirilebilir Kurallar:** Anahtar kelime casing tercihi, virgül yerleşimi vb.
