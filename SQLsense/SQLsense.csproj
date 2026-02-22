@@ -53,6 +53,7 @@
     <Compile Include="Core\ISqlFormatter.cs" />
     <Compile Include="Core\SqlFormatterOptions.cs" />
     <Compile Include="Core\KeywordManager.cs" />
+    <Compile Include="Core\SnippetManager.cs" />
     <Compile Include="Infrastructure\OutputWindowLogger.cs" />
   </ItemGroup>
   <ItemGroup>

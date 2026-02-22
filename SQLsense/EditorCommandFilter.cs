@@ -14,12 +14,14 @@ namespace SQLsense
     {
         private readonly IWpfTextView _textView;
         private readonly ISqlFormatter _formatter;
+        private readonly SnippetManager _snippetManager;
         internal IOleCommandTarget _nextCommandTarget;
 
         public EditorCommandFilter(IWpfTextView textView)
         {
             _textView = textView;
             _formatter = new SqlFormatter();
+            _snippetManager = new SnippetManager();
         }
 
         public int QueryStatus(ref Guid pguidCmdGroup, uint cCmds, OLECMD[] prgCmds, IntPtr pCmdText)
@@ -32,31 +34,78 @@ namespace SQLsense
         {
             ThreadHelper.ThrowIfNotOnUIThread();
 
-            // Execute the command first to let the character be typed
-            int hresult = _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
-
             if (pguidCmdGroup == VSConstants.VSStd2K)
             {
                 switch ((VSConstants.VSStd2KCmdID)nCmdID)
                 {
                     case VSConstants.VSStd2KCmdID.TYPECHAR:
                         char typedChar = (char)(ushort)Marshal.GetObjectForNativeVariant(pvaIn);
-                        if (typedChar == ' ' || typedChar == '\t' || typedChar == '\r' || typedChar == '\n' || typedChar == ';')
+                        if (typedChar == ' ' || typedChar == '\t')
                         {
-                            _ = FormatCurrentContextAsync();
+                            if (TryExpandSnippet()) return VSConstants.S_OK; // Swallow space/tab if expanded
                         }
                         break;
                     case VSConstants.VSStd2KCmdID.RETURN:
                     case VSConstants.VSStd2KCmdID.TAB:
-                        _ = FormatCurrentContextAsync();
+                    case VSConstants.VSStd2KCmdID.BACKTAB:
+                        if (TryExpandSnippet()) return VSConstants.S_OK; // Swallow if expanded
                         break;
+                }
+            }
+
+            // Let the character be typed
+            int hresult = _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
+
+            // Trigger async keyword casing after character is typed
+            if (hresult == VSConstants.S_OK && pguidCmdGroup == VSConstants.VSStd2K)
+            {
+                var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
+                if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
+                {
+                    _ = FormatKeywordsAsync();
                 }
             }
 
             return hresult;
         }
 
-        private async System.Threading.Tasks.Task FormatCurrentContextAsync()
+        private bool TryExpandSnippet()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            
+            try
+            {
+                var textBuffer = _textView.TextBuffer;
+                var caretPosition = _textView.Caret.Position.BufferPosition;
+                var line = caretPosition.GetContainingLine();
+                
+                int caretOffsetInLine = caretPosition.Position - line.Start.Position;
+                string textBeforeCaret = line.GetText().Substring(0, caretOffsetInLine).TrimEnd();
+                
+                int lastSpaceIndex = textBeforeCaret.LastIndexOfAny(new char[] { ' ', '\t', '\n', '\r', '(', ')', ',', '=', '<', '>', '+' });
+                string lastWord = lastSpaceIndex == -1 ? textBeforeCaret : textBeforeCaret.Substring(lastSpaceIndex + 1);
+
+                if (!string.IsNullOrEmpty(lastWord) && _snippetManager.TryGetSnippet(lastWord, out string expansion))
+                {
+                    int wordStart = (lastSpaceIndex == -1 ? line.Start.Position : line.Start.Position + lastSpaceIndex + 1);
+                    using (var edit = textBuffer.CreateEdit())
+                    {
+                        edit.Replace(wordStart, lastWord.Length, expansion);
+                        edit.Apply();
+                    }
+                    OutputWindowLogger.Log($"Snippet expanded: {lastWord} -> {expansion.Trim()} (Trigger swallowed)");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                OutputWindowLogger.LogError("Snippet expansion failed", ex);
+            }
+            
+            return false;
+        }
+
+        private async System.Threading.Tasks.Task FormatKeywordsAsync()
         {
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
 
@@ -67,51 +116,29 @@ namespace SQLsense
                 var line = caretPosition.GetContainingLine();
                 string lineText = line.GetText();
                 
-                // Get the word just before the caret
                 int caretOffsetInLine = caretPosition.Position - line.Start.Position;
                 string textBeforeCaret = lineText.Substring(0, caretOffsetInLine).TrimEnd();
                 
                 int lastSpaceIndex = textBeforeCaret.LastIndexOfAny(new char[] { ' ', '\t', '\n', '\r', '(', ')', ',', '=', '<', '>', '+' });
                 string lastWord = lastSpaceIndex == -1 ? textBeforeCaret : textBeforeCaret.Substring(lastSpaceIndex + 1);
 
-                // 1. Immediate Keyword Casing (SQL Prompt Style)
-                if (!string.IsNullOrEmpty(lastWord))
+                if (!string.IsNullOrEmpty(lastWord) && KeywordManager.IsKeyword(lastWord))
                 {
-                    if (KeywordManager.IsKeyword(lastWord))
+                    string casedWord = KeywordManager.GetCasedKeyword(lastWord);
+                    if (lastWord != casedWord)
                     {
-                        string casedWord = KeywordManager.GetCasedKeyword(lastWord);
-                        if (lastWord != casedWord)
+                        int wordStart = (lastSpaceIndex == -1 ? line.Start.Position : line.Start.Position + lastSpaceIndex + 1);
+                        using (var edit = textBuffer.CreateEdit())
                         {
-                            int wordStart = (lastSpaceIndex == -1 ? line.Start.Position : line.Start.Position + lastSpaceIndex + 1);
-                            using (var edit = textBuffer.CreateEdit())
-                            {
-                                edit.Replace(wordStart, lastWord.Length, casedWord);
-                                edit.Apply();
-                            }
+                            edit.Replace(wordStart, lastWord.Length, casedWord);
+                            edit.Apply();
                         }
                     }
                 }
-
-                // 2. Statement-level Formatting (Disabled for now as per user request)
-                /*
-                string currentFullText = textBuffer.CurrentSnapshot.GetText();
-                if (string.IsNullOrWhiteSpace(currentFullText)) return;
-
-                var formattedSql = _formatter.Format(currentFullText, out var errors);
-
-                if (formattedSql != null && formattedSql != currentFullText)
-                {
-                    using (var edit = textBuffer.CreateEdit())
-                    {
-                        edit.Replace(0, textBuffer.CurrentSnapshot.Length, formattedSql);
-                        edit.Apply();
-                    }
-                }
-                */
             }
             catch (Exception ex)
             {
-                OutputWindowLogger.LogError("Real-time casing failed", ex);
+                OutputWindowLogger.LogError("Keyword casing failed", ex);
             }
         }
     }
