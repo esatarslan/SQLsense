@@ -60,6 +60,8 @@
     <Compile Include="UI\GeneralOptionsPage.cs" />
     <Compile Include="Core\Analysis\ISqlAnalyzer.cs" />
     <Compile Include="Core\Analysis\SqlAnalyzer.cs" />
+    <Compile Include="Core\Session\SessionManager.cs" />
+    <Compile Include="Core\Session\SessionTracker.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="source.extension.vsixmanifest">
@@ -74,6 +76,14 @@
     </Content>
     <Content Include="Resources\Icon.png">
       <IncludeInVSIX>true</IncludeInVSIX>
+    </Content>
+    <Content Include="runtimes\win-x64\native\e_sqlite3.dll">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <VSIXSubPath>runtimes\win-x64\native</VSIXSubPath>
+    </Content>
+    <Content Include="runtimes\win-x86\native\e_sqlite3.dll">
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <VSIXSubPath>runtimes\win-x86\native</VSIXSubPath>
     </Content>
   </ItemGroup>
   <ItemGroup>
@@ -106,6 +116,8 @@
     <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.0.5232" />
     <PackageReference Include="Microsoft.SqlServer.TransactSql.ScriptDom" Version="161.9027.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.Data.Sqlite.Core" Version="8.0.0" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.6" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" Condition="'$(VSToolsPath)' != ''" />
