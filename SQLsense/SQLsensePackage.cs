@@ -10,20 +10,27 @@ namespace SQLsense
     [PackageRegistration(UseManagedResourcesOnly = true, AllowsBackgroundLoading = true)]
     [ProvideAutoLoad(VSConstants.UICONTEXT.NoSolution_string, PackageAutoLoadFlags.BackgroundLoad)]
     [ProvideMenuResource("Menus.ctmenu", 1)]
+    [ProvideOptionPage(typeof(UI.GeneralOptionsPage), "SQLsense", "General", 0, 0, true)]
     [ProvideBindingPath]
     [Guid(PackageGuidString)]
     public sealed class SQLsensePackage : AsyncPackage
     {
         public const string PackageGuidString = "7A1D2C3B-4E5F-6A7B-8C9D-0E1F2A3B4C5D";
 
+        public static UI.GeneralOptionsPage Settings { get; private set; }
+
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
             await this.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
+
+            Settings = (UI.GeneralOptionsPage)GetDialogPage(typeof(UI.GeneralOptionsPage));
             
             Infrastructure.OutputWindowLogger.Initialize(this);
+            Infrastructure.AnalysisErrorProvider.Initialize(this);
             Infrastructure.OutputWindowLogger.Log("SQLsense Package Initialized.");
             
             await FormatSqlCommand.InitializeAsync(this);
+            await SettingsCommand.InitializeAsync(this);
         }
     }
 }

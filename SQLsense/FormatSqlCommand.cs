@@ -70,8 +70,24 @@ namespace SQLsense
                 return;
             }
 
+            // Create options from settings
+            var options = new Core.SqlFormatterOptions();
+            if (SQLsensePackage.Settings != null)
+            {
+                // Map custom CasingStyle to ScriptDom.KeywordCasing
+                options.KeywordCasing = SQLsensePackage.Settings.KeywordCasing == UI.CasingStyle.Lowercase
+                    ? Microsoft.SqlServer.TransactSql.ScriptDom.KeywordCasing.Lowercase
+                    : Microsoft.SqlServer.TransactSql.ScriptDom.KeywordCasing.Uppercase;
+
+                options.IndentationSize = SQLsensePackage.Settings.IndentationSize;
+                options.IncludeSemicolons = SQLsensePackage.Settings.IncludeSemicolons;
+                options.NewLineBeforeFromClause = SQLsensePackage.Settings.NewLineBeforeFromClause;
+                options.NewLineBeforeWhereClause = SQLsensePackage.Settings.NewLineBeforeWhereClause;
+                options.NewLineBeforeJoinClause = SQLsensePackage.Settings.NewLineBeforeJoinClause;
+            }
+
             // Format the SQL Text
-            Core.ISqlFormatter formatter = new SqlFormatter();
+            Core.ISqlFormatter formatter = new SqlFormatter(options);
             var formattedSql = formatter.Format(sqlText, out var errors);
 
             if (errors != null && errors.Count > 0)

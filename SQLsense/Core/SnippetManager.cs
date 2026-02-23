@@ -1,28 +1,66 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using Newtonsoft.Json;
+using SQLsense.Infrastructure;
 
 namespace SQLsense.Core
 {
     public class SnippetManager
     {
-        private readonly Dictionary<string, string> _snippets;
+        private Dictionary<string, string> _snippets;
 
         public SnippetManager()
         {
-            // Default snippets - In a later phase, these will be loaded from a JSON file/settings
-            _snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            LoadSnippets();
+        }
+
+        private void LoadSnippets()
+        {
+            try
             {
-                { "ssf", "SELECT * FROM " },
-                { "st100", "SELECT TOP 100 * FROM " },
-                { "sc", "SELECT COUNT(*) FROM " },
-                { "ct", "CREATE TABLE " },
-                { "ii", "INSERT INTO " },
-                { "ud", "UPDATE  SET  WHERE " },
-                { "df", "DELETE FROM  WHERE " },
-                { "gb", "GROUP BY " },
-                { "ob", "ORDER BY " },
-                { "go", "GO" + Environment.NewLine }
-            };
+                // Set defaults
+                _snippets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    { "ssf", "SELECT * FROM " },
+                    { "st100", "SELECT TOP 100 * FROM " },
+                    { "sc", "SELECT COUNT(*) FROM " },
+                    { "ct", "CREATE TABLE " },
+                    { "ii", "INSERT INTO " },
+                    { "ud", "UPDATE  SET  WHERE " },
+                    { "df", "DELETE FROM  WHERE " },
+                    { "gb", "GROUP BY " },
+                    { "ob", "ORDER BY " },
+                    { "go", "GO" + Environment.NewLine }
+                };
+
+                // Try to load from JSON file
+                string assemblyPath = Path.GetDirectoryName(typeof(SnippetManager).Assembly.Location);
+                string jsonPath = Path.Combine(assemblyPath, "snippets.json");
+
+                if (File.Exists(jsonPath))
+                {
+                    string json = File.ReadAllText(jsonPath);
+                    var externalSnippets = JsonConvert.DeserializeObject<Dictionary<string, string>>(json);
+                    
+                    if (externalSnippets != null)
+                    {
+                        foreach (var kvp in externalSnippets)
+                        {
+                            _snippets[kvp.Key] = kvp.Value;
+                        }
+                        OutputWindowLogger.Log($"Loaded {externalSnippets.Count} snippets from snippets.json");
+                    }
+                }
+                else
+                {
+                    OutputWindowLogger.Log("snippets.json not found, using default snippets.");
+                }
+            }
+            catch (Exception ex)
+            {
+                OutputWindowLogger.LogError("Failed to load snippets from JSON", ex);
+            }
         }
 
         public bool TryGetSnippet(string shortcut, out string expansion)

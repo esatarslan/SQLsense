@@ -1,0 +1,12 @@
+{
+  "ssf": "SELECT * FROM ",
+  "st100": "SELECT TOP 100 * FROM ",
+  "sc": "SELECT COUNT(*) FROM ",
+  "ct": "CREATE TABLE ",
+  "ii": "INSERT INTO ",
+  "ud": "UPDATE  SET  WHERE ",
+  "df": "DELETE FROM  WHERE ",
+  "gb": "GROUP BY ",
+  "ob": "ORDER BY ",
+  "go": "GO\r\n"
+}

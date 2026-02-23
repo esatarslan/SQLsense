@@ -28,6 +28,7 @@ if (Test-Path $targetDir) {
 Copy-Item -Path "$sourceDir\*.dll" -Destination $targetDir -Force
 Copy-Item -Path "$sourceDir\SQLsense.pkgdef" -Destination $targetDir -Force
 Copy-Item -Path "$sourceDir\extension.vsixmanifest" -Destination $targetDir -Force
+Copy-Item -Path "$sourceDir\snippets.json" -Destination $targetDir -Force
 
 # Critical for MEF components (Real-time formatting): Clear the Component Model Cache
 Write-Host "Clearing SSMS MEF Component Cache..." -ForegroundColor Yellow

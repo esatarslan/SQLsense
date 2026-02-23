@@ -30,11 +30,19 @@
     </Groups>
 
     <Buttons>
-      <!-- A test button inside our Menu Group -->
+      <!-- Format SQL Button -->
       <Button guid="guidSQLsenseCmdSet" id="cmdidTestCommand" priority="0x0100" type="Button">
         <Parent guid="guidSQLsenseCmdSet" id="MyMenuGroup" />
         <Strings>
-          <ButtonText>Format SQL (Test)</ButtonText>
+          <ButtonText>Format SQL</ButtonText>
+        </Strings>
+      </Button>
+      
+      <!-- Settings Button -->
+      <Button guid="guidSQLsenseCmdSet" id="cmdidSettingsCommand" priority="0x0200" type="Button">
+        <Parent guid="guidSQLsenseCmdSet" id="MyMenuGroup" />
+        <Strings>
+          <ButtonText>Settings</ButtonText>
         </Strings>
       </Button>
     </Buttons>
@@ -50,6 +58,7 @@
       <IDSymbol name="TopLevelMenu" value="0x1021" />
       <IDSymbol name="MyMenuGroup" value="0x1020" />
       <IDSymbol name="cmdidTestCommand" value="0x0100" />
+      <IDSymbol name="cmdidSettingsCommand" value="0x0101" />
     </GuidSymbol>
   </Symbols>
 </CommandTable>
