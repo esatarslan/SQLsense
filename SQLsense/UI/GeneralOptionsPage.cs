@@ -19,10 +19,21 @@ namespace SQLsense.UI
         private CasingStyle _keywordCasing = CasingStyle.Uppercase;
         private int _indentationSize = 4;
         private bool _enableSqlGuardian = false;
+        private bool _enableSessionRecovery = false;
         private bool _includeSemicolons = true;
         private bool _newLineBeforeFromClause = true;
         private bool _newLineBeforeWhereClause = true;
         private bool _newLineBeforeJoinClause = true;
+
+        [Category("Session Recovery")]
+        [DisplayName("Enable Session Recovery")]
+        [Description("Automatically restores open SQL sekmeler when SSMS restarts.")]
+        [DefaultValue(false)]
+        public bool EnableSessionRecovery
+        {
+            get { return _enableSessionRecovery; }
+            set { _enableSessionRecovery = value; }
+        }
 
         [Category("SQL Guardian (Analysis)")]
         [DisplayName("Enable SQL Guardian")]

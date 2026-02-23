@@ -30,6 +30,12 @@ Copy-Item -Path "$sourceDir\SQLsense.pkgdef" -Destination $targetDir -Force
 Copy-Item -Path "$sourceDir\extension.vsixmanifest" -Destination $targetDir -Force
 Copy-Item -Path "$sourceDir\snippets.json" -Destination $targetDir -Force
 
+# Copy native runtimes if they exist
+if (Test-Path "$sourceDir\runtimes") {
+    Write-Host "Copying native runtimes..." -ForegroundColor Gray
+    Copy-Item -Path "$sourceDir\runtimes" -Destination $targetDir -Force -Recurse
+}
+
 # Critical for MEF components (Real-time formatting): Clear the Component Model Cache
 Write-Host "Clearing SSMS MEF Component Cache..." -ForegroundColor Yellow
 $mefCachePath = "$env:LOCALAPPDATA\Microsoft\SSMS\22.0_*\ComponentModelCache"
