@@ -9,7 +9,15 @@
     <Icon>Resources\Icon.png</Icon>
   </Metadata>
   <Installation>
-    <!-- Target SSMS 20/22. SSMS uses isolated shell of VS15/17/22. SSMS 20/22 is based on VS2022 -> v17.0+ -->
+    <!-- Target SSMS directly for the VSIX Installer -->
+    <InstallationTarget Id="Microsoft.SqlServer.ManagementStudio" Version="[15.0, 25.0)">
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <InstallationTarget Id="Microsoft.SqlServer.ManagementStudio" Version="[15.0, 25.0)">
+      <ProductArchitecture>x86</ProductArchitecture>
+    </InstallationTarget>
+    
+    <!-- Fallback targets for the isolated shell dependencies -->
     <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0, 18.0)">
       <ProductArchitecture>amd64</ProductArchitecture>
     </InstallationTarget>
