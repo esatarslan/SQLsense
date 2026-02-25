@@ -8,6 +8,10 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    
+    # Required to allow action-gh-release to create releases and upload files
+    permissions:
+      contents: write
 
     env:
       Solution_Name: SQLsense.sln
