@@ -57,7 +57,9 @@
     <Compile Include="Core\SnippetManager.cs" />
     <Compile Include="Infrastructure\OutputWindowLogger.cs" />
     <Compile Include="Infrastructure\AnalysisErrorProvider.cs" />
-    <Compile Include="UI\GeneralOptionsPage.cs" />
+    <Compile Include="UI\GeneralOptionsPage.cs">
+      <SubType>Component</SubType>
+    </Compile>
     <Compile Include="Core\Analysis\ISqlAnalyzer.cs" />
     <Compile Include="Core\Analysis\SqlAnalyzer.cs" />
     <Compile Include="Core\Session\SessionManager.cs" />
