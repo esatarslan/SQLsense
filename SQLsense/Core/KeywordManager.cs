@@ -28,7 +28,7 @@ namespace SQLsense.Core
                 "USER", "VALUES", "VARYING", "VIEW", "WAITFOR", "WHEN", "WHERE", "WHILE", "WITH",
                 "VARCHAR", "NVARCHAR", "INT", "BIGINT", "SMALLINT", "TINYINT", "BIT", "DECIMAL", "NUMERIC", "MONEY", "SMALLMONEY", "FLOAT", 
                 "REAL", "DATETIME", "DATETIME2", "DATETIMEOFFSET", "DATE", "TIME", "CHAR", "NCHAR", "BINARY", "VARBINARY", "IMAGE", "TEXT", 
-                "NTEXT", "XML", "MAX", "GO", "PIVOT", "UNPIVOT", "MERGE", "OUTPUT"
+                "NTEXT", "XML", "GO", "PIVOT", "UNPIVOT", "MERGE", "OUTPUT"
             };
 
             _keywords = new HashSet<string>(list, StringComparer.OrdinalIgnoreCase);

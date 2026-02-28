@@ -69,5 +69,6 @@ namespace SQLsense.Core
         }
 
         public IEnumerable<string> AllShortcuts => _snippets.Keys;
+        public IEnumerable<KeyValuePair<string, string>> AllSnippets => _snippets;
     }
 }
