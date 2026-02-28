@@ -57,6 +57,16 @@
     <Compile Include="Core\SnippetManager.cs" />
     <Compile Include="Infrastructure\OutputWindowLogger.cs" />
     <Compile Include="Infrastructure\AnalysisErrorProvider.cs" />
+    <Compile Include="UI\Completion\CompletionItem.cs" />
+    <Compile Include="Core\Completion\CompletionEngine.cs" />
+    <Compile Include="Core\Completion\DatabaseSchemaProvider.cs" />
+    <Page Include="UI\Completion\CompletionWindow.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
+    <Compile Include="UI\Completion\CompletionWindow.xaml.cs">
+      <DependentUpon>CompletionWindow.xaml</DependentUpon>
+    </Compile>
     <Compile Include="UI\GeneralOptionsPage.cs">
       <SubType>Component</SubType>
     </Compile>
@@ -108,6 +118,7 @@
     <Reference Include="WindowsBase" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
+    <Reference Include="System.Xaml" />
     <Reference Include="Microsoft.VisualStudio.Text.UI.Wpf" />
     <Reference Include="Microsoft.VisualStudio.Text.UI" />
     <Reference Include="Microsoft.VisualStudio.Text.Data" />

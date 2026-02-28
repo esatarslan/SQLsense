@@ -66,6 +66,52 @@ namespace SQLsense
                     await RestoreSessionsAsync();
                 });
             }
+
+            // Suppress native SSMS IntelliSense to prevent collision with our WPF box
+            await SuppressNativeIntelliSenseAsync();
+        }
+
+        private async System.Threading.Tasks.Task SuppressNativeIntelliSenseAsync()
+        {
+            try
+            {
+                var dte = await GetServiceAsync(typeof(SDTE)) as DTE2;
+                if (dte == null) return;
+
+                string[] categories = { "TextEditor" };
+                string[] subCategories = { "SQL", "Transact-SQL", "Transact-SQL-IntelliSense", "SQL Server Tools" };
+
+                foreach (var cat in categories)
+                {
+                    foreach (var subCat in subCategories)
+                    {
+                        try
+                        {
+                            var props = dte.Properties[cat, subCat];
+                            if (props != null)
+                            {
+                                foreach (Property prop in props)
+                                {
+                                    if (prop.Name.IndexOf("IntelliSense", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                        prop.Name.IndexOf("AutoList", StringComparison.OrdinalIgnoreCase) >= 0)
+                                    {
+                                        if (prop.Value is bool bVal && bVal == true)
+                                        {
+                                            prop.Value = false;
+                                            Infrastructure.OutputWindowLogger.Log($"Disabled Native Setting: {cat}.{subCat}.{prop.Name}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { /* Ignore if category doesn't exist */ }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.OutputWindowLogger.LogError("Failed to suppress Native IntelliSense via DTE", ex);
+            }
         }
 
         private async System.Threading.Tasks.Task RestoreSessionsAsync()

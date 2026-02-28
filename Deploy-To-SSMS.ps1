@@ -12,7 +12,11 @@ if (-NOT ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 $extensionName = "SQLsense"
 $targetDir = "$SSMSPath\Extensions\$extensionName"
-$sourceDir = "$PSScriptRoot\SQLsense\bin\Debug"
+$sourceDir = "$PSScriptRoot\SQLsense\bin\Release"
+
+Write-Host "Closing SSMS if it is running to release file locks..." -ForegroundColor Yellow
+Stop-Process -Name "Ssms" -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2 # Give it a moment to release handles
 
 Write-Host "Deploying $extensionName to $targetDir..." -ForegroundColor Cyan
 
@@ -37,9 +41,12 @@ if (Test-Path "$sourceDir\runtimes") {
 }
 
 # Critical for MEF components (Real-time formatting): Clear the Component Model Cache
-Write-Host "Clearing SSMS MEF Component Cache..." -ForegroundColor Yellow
+Write-Host "Clearing SSMS MEF Component Cache and Extension Metadata Cache..." -ForegroundColor Yellow
 $mefCachePath = "$env:LOCALAPPDATA\Microsoft\SSMS\22.0_*\ComponentModelCache"
 Get-ChildItem -Path $mefCachePath -Include * -Recurse | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+$extensionCachePath = "$env:LOCALAPPDATA\Microsoft\SSMS\22.0_*\Extensions\ExtensionMetadataCache.mpack"
+Get-ChildItem -Path $extensionCachePath -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
 Write-Host "Forcing SSMS to rebuild its UI Menu Cache..." -ForegroundColor Yellow
 $ssmsExe = "$SSMSPath\Ssms.exe"
