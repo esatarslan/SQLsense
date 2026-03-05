@@ -135,7 +135,13 @@ namespace SQLsense
 
                     if (isTypeCharTrigger || isBackspaceWithVisibleWindow)
                     {
-                        TriggerCompletion();
+                        bool showedCustomUI = TriggerCompletion();
+                        if (showedCustomUI)
+                        {
+                            // Dismiss native SSMS IntelliSense actively so it doesn't steal focus from our WPF window.
+                            Guid vsStd2KGroup = VSConstants.VSStd2K;
+                            _nextCommandTarget.Exec(ref vsStd2KGroup, (uint)VSConstants.VSStd2KCmdID.CANCEL, 0, IntPtr.Zero, IntPtr.Zero);
+                        }
                     }
                     else
                     {
@@ -157,7 +163,7 @@ namespace SQLsense
             return hresult;
         }
 
-        private void TriggerCompletion()
+        private bool TriggerCompletion()
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             try
@@ -166,34 +172,44 @@ namespace SQLsense
                 string fullText = _textView.TextBuffer.CurrentSnapshot.GetText();
                 string textBeforeCaret = fullText.Substring(0, caretPosition.Position);
                 
-                int lastSpaceIndex = textBeforeCaret.LastIndexOfAny(new char[] { ' ', '\t', '\n', '\r', '(', ')', ',', '=', '<', '>', '+' });
-                string currentWord = lastSpaceIndex == -1 ? textBeforeCaret : textBeforeCaret.Substring(lastSpaceIndex + 1);
+                // Find the active text being typed by looking back from caret to the first non-valid identifier char
+                int wordStart = caretPosition.Position - 1;
+                while (wordStart >= 0)
+                {
+                    char c = fullText[wordStart];
+                    if (!char.IsLetterOrDigit(c) && c != '_' && c != '@' && c != '#' && c != '.')
+                    {
+                        break;
+                    }
+                    wordStart--;
+                }
+                
+                string currentWord = fullText.Substring(wordStart + 1, caretPosition.Position - (wordStart + 1));
 
                 // Trigger background schema refresh implicitly on typing
                 SQLsense.Core.Completion.DatabaseSchemaProvider.TriggerRefreshInBackground();
 
+                // If they haven't typed a word yet (e.g., just hit space), we should ONLY show the window 
+                // if the AST explicitly commands a structured injection (like expecting SET or Columns)
                 if (string.IsNullOrWhiteSpace(currentWord))
                 {
-                    string textTrimmed = textBeforeCaret.TrimEnd();
-                    if (string.IsNullOrEmpty(textTrimmed)) 
+                    SqlContextState astState = ContextStateAnalyzer.DetermineState(fullText, caretPosition.Position);
+                    
+                    bool astDemandsUI = astState == SqlContextState.UpdateSetColumns || 
+                                        astState == SqlContextState.SelectColumns || 
+                                        astState == SqlContextState.JoinOnCondition ||
+                                        astState == SqlContextState.WhereCondition ||
+                                        astState == SqlContextState.GroupByColumns ||
+                                        astState == SqlContextState.OrderByColumns ||
+                                        astState == SqlContextState.UpdateTable ||
+                                        astState == SqlContextState.InsertTable ||
+                                        astState == SqlContextState.FromTables ||
+                                        astState == SqlContextState.JoinTables;
+
+                    if (!astDemandsUI)
                     {
                         _completionWindow?.Hide();
-                        return;
-                    }
-                    
-                    char lastChar = textTrimmed[textTrimmed.Length - 1];
-                    bool isOperatorOrComma = lastChar == ',' || lastChar == '=' || lastChar == '<' || lastChar == '>' || lastChar == '+' || lastChar == '-' || lastChar == '*' || lastChar == '/' || lastChar == '(' || lastChar == '.';
-                    
-                    int prevSpace = textTrimmed.LastIndexOfAny(new char[] { ' ', '\t', '\n', '\r', '(', ')', ',', '=', '<', '>', '+' });
-                    string prevWord = prevSpace == -1 ? textTrimmed : textTrimmed.Substring(prevSpace + 1);
-                    prevWord = prevWord.ToUpperInvariant();
-                    
-                    bool isKeyword = prevWord == "SELECT" || prevWord == "FROM" || prevWord == "JOIN" || prevWord == "WHERE" || prevWord == "SET" || prevWord == "ON" || prevWord == "UPDATE" || prevWord == "INTO" || prevWord == "AND" || prevWord == "OR" || prevWord == "BY" || prevWord == "HAVING" || prevWord == "EXEC" || prevWord == "EXECUTE";
-                    
-                    if (!isOperatorOrComma && !isKeyword)
-                    {
-                        _completionWindow?.Hide();
-                        return;
+                        return false;
                     }
                 }
 
@@ -202,7 +218,7 @@ namespace SQLsense
                 if (items.Count == 0)
                 {
                     _completionWindow?.Hide();
-                    return;
+                    return false;
                 }
 
                 if (_completionWindow == null)
@@ -220,10 +236,15 @@ namespace SQLsense
                 _completionWindow.SetItems(items, hasStrictPrefixMatch);
 
                 // Calculate screen position natively via VS Text View
-                var textViewBounds = _textView.TextViewLines.GetCharacterBounds(caretPosition);
+                var textViewLine = _textView.TextViewLines.GetTextViewLineContainingBufferPosition(caretPosition);
+                var bounds = textViewLine.GetCharacterBounds(caretPosition);
                 
-                // PointToScreen handles multi-monitor scaling nicely
-                var screenTopLeft = _textView.VisualElement.PointToScreen(new System.Windows.Point(textViewBounds.Left, textViewBounds.Bottom));
+                // Subtract the viewport scroll offsets to get the exact relative X/Y pixel within the VisualElement window
+                double viewX = bounds.Left - _textView.ViewportLeft;
+                double viewY = bounds.Bottom - _textView.ViewportTop;
+                
+                // Translate the logical view pixels to absolute monitor screen pixels
+                var screenTopLeft = _textView.VisualElement.PointToScreen(new System.Windows.Point(viewX, viewY));
                 
                 _completionWindow.Left = screenTopLeft.X;
                 _completionWindow.Top = screenTopLeft.Y;
@@ -232,10 +253,12 @@ namespace SQLsense
                 {
                     _completionWindow.Show();
                 }
+                return true;
             }
             catch (Exception ex)
             {
                 OutputWindowLogger.LogError("Failed to show custom completion window", ex);
+                return false;
             }
         }
 

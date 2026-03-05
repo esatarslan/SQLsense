@@ -15,6 +15,19 @@ namespace SQLsense.Core.Completion
         private static List<CompletionItem> _cachedObjects = new List<CompletionItem>();
         private static DateTime _lastRefresh = DateTime.MinValue;
         private static bool _isFetching = false;
+        private static bool _isMockMode = false;
+
+        public static void SetMockObjects(List<CompletionItem> mockObjects)
+        {
+            _cachedObjects = mockObjects;
+            _isMockMode = true;
+        }
+
+        public static void SetMockColumns(List<CompletionItem> mockColumns)
+        {
+            _cachedColumns = mockColumns;
+            _isMockMode = true;
+        }
 
         public static string GetActiveConnectionString()
         {
@@ -100,6 +113,7 @@ namespace SQLsense.Core.Completion
 
         public static void TriggerRefreshInBackground()
         {
+            if (_isMockMode) return;
             if (_isFetching) return;
 
             string connStr = GetActiveConnectionString();

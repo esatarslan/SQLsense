@@ -48,13 +48,21 @@ Get-ChildItem -Path $mefCachePath -Include * -Recurse | Remove-Item -Recurse -Fo
 $extensionCachePath = "$env:LOCALAPPDATA\Microsoft\SSMS\22.0_*\Extensions\ExtensionMetadataCache.mpack"
 Get-ChildItem -Path $extensionCachePath -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
-Write-Host "Forcing SSMS to rebuild its UI Menu Cache..." -ForegroundColor Yellow
+Write-Host "Clearing SQLsense local cache from AppData Extensions folder..." -ForegroundColor Yellow
+$appDataExtensionsPath = "$env:LOCALAPPDATA\Microsoft\SSMS\22.0_*\Extensions\SQLsense"
+Get-ChildItem -Path $env:LOCALAPPDATA\Microsoft\SSMS\22.0_* -Directory -Filter "Extensions" | ForEach-Object {
+    $sqlsenseFolder = Join-Path $_.FullName "SQLsense"
+    if (Test-Path $sqlsenseFolder) {
+        Write-Host "Removing leftover AppData cache at: $sqlsenseFolder" -ForegroundColor Gray
+        Remove-Item -Path $sqlsenseFolder -Force -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host "Forcing SSMS to rebuild its UI Menu & Extension Cache..." -ForegroundColor Yellow
 $ssmsExe = "$SSMSPath\Ssms.exe"
 if (Test-Path $ssmsExe) {
-    Start-Process -FilePath $ssmsExe -ArgumentList "/updateconfiguration" -Wait
+    Start-Process -FilePath $ssmsExe -ArgumentList "/setup" -Wait
     Write-Host "UI Cache rebuilt successfully." -ForegroundColor Green
 }
 
 Write-Host "Deployment complete! You can now start SSMS." -ForegroundColor Green
-
-

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
@@ -8,6 +8,7 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <RuntimeIdentifier>win</RuntimeIdentifier>
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectTypeGuids>{82b43b9b-a64c-4715-b499-d71e9ca2bd60};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
     <ProjectGuid>{4A1D2C3B-4E5F-6A7B-8C9D-0E1F2A3B4C5D}</ProjectGuid>
@@ -74,6 +75,8 @@
     <Compile Include="Core\Analysis\SqlAnalyzer.cs" />
     <Compile Include="Core\Session\SessionManager.cs" />
     <Compile Include="Core\Session\SessionTracker.cs" />
+    <Compile Include="Core\Analysis\ActiveStatementVisitor.cs" />
+    <Compile Include="Core\Analysis\ContextStateAnalyzer.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="source.extension.vsixmanifest">

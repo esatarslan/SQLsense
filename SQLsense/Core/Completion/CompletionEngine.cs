@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using SQLsense.Core;
 using SQLsense.Infrastructure;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
+using SQLsense.Core.Analysis;
 
 namespace SQLsense.Core.Completion
 {
@@ -39,118 +41,243 @@ namespace SQLsense.Core.Completion
 
             if (!string.IsNullOrWhiteSpace(textBeforeCaret))
             {
-                // Split all words before the caret
-                var beforeWords = textBeforeCaret.Split(new[] { ' ', '\t', '\n', '\r', '(', ')', ',', '=', '<', '>', '+' }, StringSplitOptions.RemoveEmptyEntries);
+                SqlContextState state = ContextStateAnalyzer.DetermineState(fullText, textBeforeCaret.Length);
+
+                // ALIAS INTERCEPT MASTER SWITCH: Do not suggest anything if the user is literally inventing an alias mid-word
+                bool isTypingAliasDefinition = false;
+                bool endsWithSpaceOrPunctuation = textBeforeCaret.EndsWith(" ") || textBeforeCaret.EndsWith("\t") || textBeforeCaret.EndsWith("\n") || textBeforeCaret.EndsWith("\r") || textBeforeCaret.EndsWith(",") || textBeforeCaret.EndsWith(".");
                 
-                if (beforeWords.Length > 0)
+                if (!endsWithSpaceOrPunctuation && state != SqlContextState.UpdateSetColumns)
                 {
-                    // Find the last actual keyword typed
-                    for (int i = beforeWords.Length - 1; i >= 0; i--)
+                    string trimmedBefore = textBeforeCaret.TrimEnd();
+                    int lastSpace = trimmedBefore.LastIndexOfAny(new[] { ' ', '\t', '\n', '\r', ',', '(' });
+                    string prevWord = lastSpace >= 0 ? trimmedBefore.Substring(0, lastSpace).TrimEnd() : "none";
+                    int prevWordLastSpace = prevWord.LastIndexOfAny(new[] { ' ', '\t', '\n', '\r', ',', '(' });
+                    prevWord = prevWordLastSpace >= 0 ? prevWord.Substring(prevWordLastSpace + 1).ToUpperInvariant() : prevWord.ToUpperInvariant();
+
+                    if (prevWord == "AS")
                     {
-                        string w = beforeWords[i].ToUpperInvariant();
+                        isTypingAliasDefinition = true;
+                    }
+                    else
+                    {
+                        string strippedPrevWord = prevWord.Contains(".") ? prevWord.Substring(prevWord.LastIndexOf(".") + 1) : prevWord;
+                        strippedPrevWord = strippedPrevWord.Replace("[", "").Replace("]", "");
                         
-                        // If the currently typed word is literally just this keyword, skip checking it against itself 
-                        // unless prefix is empty (meaning they typed the keyword AND a space)
-                        if (i == beforeWords.Length - 1 && !string.IsNullOrEmpty(searchPrefix))
+                        // We need the schema objects to check if prevWord is a table
+                        var tmpObjects = DatabaseSchemaProvider.GetCachedObjects();
+                        if (System.Linq.Enumerable.Any(tmpObjects, o => (o.IconType == SQLsense.UI.Completion.CompletionIconType.Table || o.IconType == SQLsense.UI.Completion.CompletionIconType.View) 
+                                                   && o.Text.Equals(strippedPrevWord, StringComparison.OrdinalIgnoreCase)))
                         {
-                            continue;
+                            isTypingAliasDefinition = true;
                         }
+                    }
+                }
 
-                        if (w == "FROM" || w == "JOIN" || w == "INTO" || w == "UPDATE")
+                if (isTypingAliasDefinition)
+                {
+                    return results; // Return empty immediately so the UI gracefully hides while they invent their alias
+                }
+
+
+                if (state == SqlContextState.Unknown)
+                {
+                    // e.g. typing a value `WHERE id = `
+                    allowTables = false;
+                    allowViews = false;
+                    allowSPs = false;
+                    allowSnippets = false;
+                    allowKeywords = true;
+                    allowFunctions = true;
+                    // Note: We leave allowColumns = true because they might do `WHERE t0.Id = t1.Id`
+                }
+                else if (state == SqlContextState.FromTables || state == SqlContextState.JoinTables || state == SqlContextState.InsertTable || state == SqlContextState.UpdateTable)
+                {
+                    allowSnippets = false;
+                    allowSPs = false;
+                    allowColumns = false;
+                    allowKeywords = true;
+                    prioritizeTables = true;
+                    
+                    // Suppress tables if we just finished typing one or an alias, so we don't spam tables when they press space
+                    if (endsWithSpaceOrPunctuation)
+                    {
+                        string trimmed = textBeforeCaret.TrimEnd();
+                        if (!string.IsNullOrEmpty(trimmed))
                         {
-                            allowSnippets = false;
-                            allowSPs = false;
-                            allowColumns = false;
-                            allowKeywords = false;
-                            prioritizeTables = true;
-                            break;
-                        }
-                        if (w == "EXEC" || w == "EXECUTE")
-                        {
-                            allowSnippets = false;
-                            allowTables = false;
-                            allowViews = false;
-                            allowColumns = false;
-                            allowKeywords = false;
-                            break;
-                        }
-                        if (w == "SELECT" || w == "WHERE" || w == "ON" || w == "SET" || w == "AND" || w == "OR" || w == "BY" || w == "HAVING")
-                        {
-                            allowSPs = false;
-                            prioritizeColumns = true;
-                            if (w == "ON" || (i == beforeWords.Length - 1 && w == "ON"))
+                            char lastChar = trimmed[trimmed.Length - 1];
+                            if (lastChar != ',' && !trimmed.EndsWith("FROM", StringComparison.OrdinalIgnoreCase) && !trimmed.EndsWith("JOIN", StringComparison.OrdinalIgnoreCase) && !trimmed.EndsWith("UPDATE", StringComparison.OrdinalIgnoreCase) && !trimmed.EndsWith("INTO", StringComparison.OrdinalIgnoreCase))
                             {
-                                var joins = GenerateSmartJoins(beforeWords, textBeforeCaret);
-                                foreach(var j in joins) {
-                                    results.Add(j);
-                                    matchScores[j] = -1; // Top priority
-                                }
+                                // They finished typing a table or an alias. At this point, they expect structural keywords (WHERE, ON, JOIN, etc.)
+                                allowTables = false;
+                                prioritizeTables = false;
                             }
-                            else if (w == "BY" || (i == beforeWords.Length - 1 && w == "BY"))
+                        }
+                    }
+                }
+                else if (state == SqlContextState.SelectColumns || state == SqlContextState.WhereCondition || state == SqlContextState.JoinOnCondition)
+                {
+                    allowSPs = false;
+                    prioritizeColumns = true;
+
+                    if (state == SqlContextState.JoinOnCondition && textBeforeCaret.TrimEnd().EndsWith(" ON", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var beforeWords = textBeforeCaret.Split(new[] { ' ', '\t', '\n', '\r', '(', ')', ',' }, StringSplitOptions.RemoveEmptyEntries);
+                        var joins = GenerateSmartJoins(beforeWords, textBeforeCaret);
+                        foreach(var j in joins) {
+                            results.Add(j);
+                            matchScores[j] = -1; // Top priority
+                        }
+                    }
+                }
+                else if (state == SqlContextState.GroupByColumns || state == SqlContextState.OrderByColumns)
+                {
+                    allowSPs = false;
+                    prioritizeColumns = true;
+
+                    string prevWord = state == SqlContextState.GroupByColumns ? "GROUP" : "ORDER";
+                    if (textBeforeCaret.TrimEnd().EndsWith(" BY", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string cols = GenerateGroupBySnippet(fullText);
+                        if (!string.IsNullOrEmpty(cols))
+                        {
+                            string snippetDesc = prevWord == "GROUP" ? "Smart GROUP BY: Insert non-aggregated columns" : "Smart ORDER BY: Insert columns";
+                            var snippetItem = new SQLsense.UI.Completion.CompletionItem(cols, snippetDesc, SQLsense.UI.Completion.CompletionIconType.Snippet)
                             {
-                                string prevWord = (i > 0) ? beforeWords[i - 1].ToUpperInvariant() : "";
-                                // if 'BY' is the very last word before caret, it will be at length - 1, and its prefix is at length - 2
-                                if (i == beforeWords.Length - 1 && textBeforeCaret.TrimEnd().EndsWith(" BY", StringComparison.OrdinalIgnoreCase))
+                                SnippetExpansion = cols
+                            };
+                            results.Add(snippetItem);
+                            matchScores[snippetItem] = -1; // Top priority
+                        }
+                    }
+                }
+                else if (state == SqlContextState.UpdateSetColumns)
+                {
+                    allowSnippets = false;
+                    allowSPs = false;
+                    allowTables = false;
+                    allowViews = false;
+                    allowKeywords = false;
+                    allowFunctions = false;
+                    
+                    string trimmed = textBeforeCaret.TrimEnd();
+                    bool alreadyHasSet = trimmed.EndsWith(" SET", StringComparison.OrdinalIgnoreCase) || trimmed.EndsWith("\nSET", StringComparison.OrdinalIgnoreCase);
+
+                    if (!alreadyHasSet)
+                    {
+                        // Safely inject SET
+                        var setItem = new SQLsense.UI.Completion.CompletionItem("SET", "Keyword", SQLsense.UI.Completion.CompletionIconType.Keyword) { SnippetExpansion = "SET " };
+                        
+                        if (string.IsNullOrEmpty(searchPrefix))
+                        {
+                            results.Add(setItem);
+                            matchScores[setItem] = -2; // Absolute Top Priority
+                        }
+                        else if ("set".StartsWith(searchPrefix))
+                        {
+                            results.Add(setItem);
+                            matchScores[setItem] = -2; // Strongly Prioritize if spelling matches
+                        }
+                        else if ("set".Contains(searchPrefix))
+                        {
+                            results.Add(setItem);
+                            matchScores[setItem] = 1;
+                        }
+                    }
+                    
+                    // Allow columns to be visible below SET in case the user skips typing SET or is investigating columns
+                    prioritizeColumns = true;
+                }
+            }
+            // Extract mentioned tables from the actively localized query text (rather than the full global file text)
+                // AST-BASED CONTEXT RESOLUTION
+                // We parse the entire document using ScriptDom to find the precise statement hosting the caret.
+                if (!string.IsNullOrWhiteSpace(fullText))
+                {
+                    try
+                    {
+                        var parser = new TSql160Parser(true);
+                        using (var reader = new System.IO.StringReader(fullText))
+                        {
+                            var fragment = parser.Parse(reader, out var errors);
+                            if (fragment != null)
+                            {
+                                int caretPosition = textBeforeCaret.Length;
+                                var activeVisitor = new ActiveStatementVisitor(caretPosition);
+                                fragment.Accept(activeVisitor);
+
+                                // The activeVisitor safely extracted only the aliases constrained to our exact statement node
+                                foreach (var kvp in activeVisitor.ActiveAliases)
                                 {
-                                    prevWord = (beforeWords.Length > 1) ? beforeWords[beforeWords.Length - 2].ToUpperInvariant() : "";
+                                    tableAliases[kvp.Key] = kvp.Value;
+                                    
+                                    // Populate mentionedTables natively from the confirmed AST values
+                                    if (!mentionedTables.Contains(kvp.Value))
+                                    {
+                                        mentionedTables.Add(kvp.Value);
+                                    }
                                 }
 
-                                if (prevWord == "GROUP" || prevWord == "ORDER")
+                                // If AST parsing somehow completely missed (e.g., initial typing with severe errors),
+                                // gracefully fallback to a simple word scan on the localized text before caret
+                                if (mentionedTables.Count == 0 && textBeforeCaret.Length > 0)
                                 {
-                                    string cols = GenerateGroupBySnippet(fullText);
-                                    if (!string.IsNullOrEmpty(cols))
+                                    int lastSemi = textBeforeCaret.LastIndexOf(';');
+                                    int lastGo = textBeforeCaret.LastIndexOf("GO\r", StringComparison.OrdinalIgnoreCase);
+                                    if (lastGo == -1) lastGo = textBeforeCaret.LastIndexOf("GO\n", StringComparison.OrdinalIgnoreCase);
+                                    int cutIdx = Math.Max(lastSemi, lastGo);
+                                    string fallbackText = cutIdx >= 0 ? textBeforeCaret.Substring(cutIdx + 1) : textBeforeCaret;
+
+                                    var fallbackWords = fallbackText.Split(new[] { ' ', '\t', '\n', '\r', ',', '(', ')', ';' }, StringSplitOptions.RemoveEmptyEntries);
+                                    
+                                    // Find the start of the current statement (the last SELECT, UPDATE, DELETE, INSERT)
+                                    int statementStartIndex = 0;
+                                    for (int i = fallbackWords.Length - 1; i >= 0; i--)
                                     {
-                                        string snippetDesc = prevWord == "GROUP" ? "Smart GROUP BY: Insert non-aggregated columns" : "Smart ORDER BY: Insert columns";
-                                        var snippetItem = new SQLsense.UI.Completion.CompletionItem(cols, snippetDesc, SQLsense.UI.Completion.CompletionIconType.Snippet)
+                                        var wUpper = fallbackWords[i].ToUpperInvariant();
+                                        if (wUpper == "SELECT" || wUpper == "UPDATE" || wUpper == "DELETE" || wUpper == "INSERT")
                                         {
-                                            SnippetExpansion = cols
-                                        };
-                                        results.Add(snippetItem);
-                                        matchScores[snippetItem] = -1; // Top priority
+                                            statementStartIndex = i;
+                                            break;
+                                        }
+                                    }
+
+                                    for (int i = statementStartIndex; i < fallbackWords.Length - 1; i++)
+                                    {
+                                        var wordUpper = fallbackWords[i].ToUpperInvariant();
+                                        if (wordUpper == "FROM" || wordUpper == "JOIN" || wordUpper == "UPDATE" || wordUpper == "INTO")
+                                        {
+                                            string tName = CleanTableName(fallbackWords[i + 1]);
+                                            mentionedTables.Add(tName);
+
+                                            // Capture Alias if present in emergency fallback
+                                            if (i + 2 < fallbackWords.Length)
+                                            {
+                                                string potentialAlias = fallbackWords[i + 2];
+                                                string potentialAliasUpper = potentialAlias.ToUpperInvariant();
+                                                
+                                                if (potentialAliasUpper == "AS" && i + 3 < fallbackWords.Length)
+                                                {
+                                                    tableAliases[fallbackWords[i + 3]] = tName.ToLowerInvariant();
+                                                }
+                                                // Exclude common structural keywords from being mistakenly parsed as aliases
+                                                else if (potentialAliasUpper != "ON" && potentialAliasUpper != "WHERE" && potentialAliasUpper != "JOIN" && potentialAliasUpper != "INNER" && potentialAliasUpper != "LEFT" && potentialAliasUpper != "RIGHT" && potentialAliasUpper != "OUTER" && potentialAliasUpper != "CROSS" && potentialAliasUpper != "GROUP" && potentialAliasUpper != "ORDER" && potentialAliasUpper != "SET" && potentialAliasUpper != "VALUES" && potentialAliasUpper != "OUTPUT")
+                                                {
+                                                    tableAliases[potentialAlias] = tName.ToLowerInvariant();
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            break;
                         }
                     }
-                }
-
-                // Extract mentioned tables from the FULL text to support Selects written before Froms
-                if (!string.IsNullOrWhiteSpace(fullText))
-                {
-                    var fullWords = fullText.Split(new[] { ' ', '\t', '\n', '\r', ',', '(', ')', ';' }, StringSplitOptions.RemoveEmptyEntries);
-                    for (int i = 0; i < fullWords.Length - 1; i++)
+                    catch (Exception ex)
                     {
-                        var wordUpper = fullWords[i].ToUpperInvariant();
-                        if (wordUpper == "FROM" || wordUpper == "JOIN" || wordUpper == "UPDATE" || wordUpper == "INTO")
-                        {
-                            string tableName = fullWords[i + 1].ToLowerInvariant().Replace("[", "").Replace("]", "");
-                            // Sometimes there is a schema dbo.Table
-                            if (tableName.Contains("."))
-                            {
-                                tableName = tableName.Substring(tableName.LastIndexOf(".") + 1);
-                            }
-                            mentionedTables.Add(tableName);
-
-                            // Capture Alias if present
-                            if (i + 2 < fullWords.Length)
-                            {
-                                string potentialAlias = fullWords[i + 2];
-                                string potentialAliasUpper = potentialAlias.ToUpperInvariant();
-                                
-                                if (potentialAliasUpper == "AS" && i + 3 < fullWords.Length)
-                                {
-                                    tableAliases[fullWords[i + 3]] = tableName.ToLowerInvariant();
-                                }
-                                else if (potentialAliasUpper != "ON" && potentialAliasUpper != "WHERE" && potentialAliasUpper != "JOIN" && potentialAliasUpper != "INNER" && potentialAliasUpper != "LEFT" && potentialAliasUpper != "RIGHT" && potentialAliasUpper != "OUTER" && potentialAliasUpper != "CROSS" && potentialAliasUpper != "GROUP" && potentialAliasUpper != "ORDER")
-                                {
-                                    tableAliases[potentialAlias] = tableName.ToLowerInvariant();
-                                }
-                            }
-                        }
+                        OutputWindowLogger.LogError("ScriptDom Context Parsing Failed", ex);
                     }
-                }
-            }
+                } // This closes if (!string.IsNullOrWhiteSpace(fullText))
+            // AST-BASED CONTEXT RESOLUTION END
 
             // Helper to add item with score
             void AddItem(SQLsense.UI.Completion.CompletionItem item, string searchText)
@@ -168,7 +295,8 @@ namespace SQLsense.Core.Completion
                 bool isDbObject = item.IconType == SQLsense.UI.Completion.CompletionIconType.Table ||
                                   item.IconType == SQLsense.UI.Completion.CompletionIconType.View ||
                                   item.IconType == SQLsense.UI.Completion.CompletionIconType.StoredProcedure ||
-                                  item.IconType == SQLsense.UI.Completion.CompletionIconType.Function;
+                                  item.IconType == SQLsense.UI.Completion.CompletionIconType.Function ||
+                                  item.IconType == SQLsense.UI.Completion.CompletionIconType.Column; // Also allow column descriptions
 
                 if (lowerText.StartsWith(searchPrefix) || (isDbObject && lowerDesc != null && lowerDesc.StartsWith(searchPrefix)))
                 {
@@ -204,49 +332,16 @@ namespace SQLsense.Core.Completion
             }
 
             // Table Aliases
-            // Do not show aliases if the user is currently typing an alias definition (i.e. right after an existing Table name, or right after "AS")
             if (allowTables && tableAliases.Count > 0)
             {
-                bool isTypingAliasDefinition = false;
-                if (!string.IsNullOrWhiteSpace(textBeforeCaret))
+                foreach (var alias in tableAliases)
                 {
-                    string trimmedBefore = textBeforeCaret.TrimEnd();
-                    int lastSpace = trimmedBefore.LastIndexOfAny(new[] { ' ', '\t', '\n', '\r', ',', '(' });
-                    
-                    string prevWord = lastSpace >= 0 ? trimmedBefore.Substring(0, lastSpace).TrimEnd() : "none";
-                    int prevWordLastSpace = prevWord.LastIndexOfAny(new[] { ' ', '\t', '\n', '\r', ',', '(' });
-                    prevWord = prevWordLastSpace >= 0 ? prevWord.Substring(prevWordLastSpace + 1).ToUpperInvariant() : prevWord.ToUpperInvariant();
-
-                    if (prevWord == "AS")
-                    {
-                        isTypingAliasDefinition = true;
-                    }
-                    else
-                    {
-                        // Check if prevWord is one of the schema objects (tables/views) meaning they are assigning an alias right now
-                        // We compare against the stripped name in case they typed dbo.Table or [dbo].[Table]
-                        string strippedPrevWord = prevWord.Contains(".") ? prevWord.Substring(prevWord.LastIndexOf(".") + 1) : prevWord;
-                        strippedPrevWord = strippedPrevWord.Replace("[", "").Replace("]", "");
-
-                        if (schemaObjects.Any(o => (o.IconType == SQLsense.UI.Completion.CompletionIconType.Table || o.IconType == SQLsense.UI.Completion.CompletionIconType.View) 
-                                                   && o.Text.Equals(strippedPrevWord, StringComparison.OrdinalIgnoreCase)))
-                        {
-                            isTypingAliasDefinition = true;
-                        }
-                    }
-                }
-
-                if (!isTypingAliasDefinition)
-                {
-                    foreach (var alias in tableAliases)
-                    {
-                        var aliasItem = new SQLsense.UI.Completion.CompletionItem(
-                            alias.Key, 
-                            "Alias for " + alias.Value, 
-                            SQLsense.UI.Completion.CompletionIconType.Table
-                        );
-                        AddItem(aliasItem, alias.Key);
-                    }
+                    var aliasItem = new SQLsense.UI.Completion.CompletionItem(
+                        alias.Key, 
+                        "Alias for " + alias.Value, 
+                        SQLsense.UI.Completion.CompletionIconType.Table
+                    );
+                    AddItem(aliasItem, alias.Key);
                 }
             }
 
@@ -303,7 +398,8 @@ namespace SQLsense.Core.Completion
                                 string lowerDesc = col.Description.ToLowerInvariant();
                                 foreach (var tbl in mentionedTables)
                                 {
-                                    if (lowerDesc.EndsWith("." + tbl) || lowerDesc == tbl)
+                                    string tblLower = tbl.ToLowerInvariant();
+                                    if (lowerDesc.EndsWith("." + tblLower) || lowerDesc == tblLower)
                                     {
                                         tableMatched = true;
                                         
@@ -333,7 +429,11 @@ namespace SQLsense.Core.Completion
                                 // Prepare its expansion text (e.g. t0.OrderId)
                                 if (!string.IsNullOrEmpty(tableOrAlias))
                                 {
-                                    colClone.SnippetExpansion = tableOrAlias + "." + colClone.Text; // Preserve the exact alias case typed by the user
+                                    string aliasUpper = tableOrAlias.ToUpperInvariant();
+                                    if (aliasUpper != "SET" && aliasUpper != "VALUES" && aliasUpper != "INTO" && aliasUpper != "OUTPUT")
+                                    {
+                                        colClone.SnippetExpansion = tableOrAlias + "." + colClone.Text; // Preserve the exact alias case typed by the user
+                                    }
                                 }
 
                                 uniqueColumns.Add(colClone.Text, colClone);
@@ -358,7 +458,7 @@ namespace SQLsense.Core.Completion
             }
 
             // Search Keywords
-            if (allowKeywords && results.Count < 50) // prevent massive keyword dumps if there are lots of matches
+            if (allowKeywords) 
             {
                 foreach (var keyword in KeywordManager.AllKeywords)
                 {
@@ -623,6 +723,86 @@ namespace SQLsense.Core.Completion
                 }
             }
             return results;
+        }
+
+        private string ExtractActiveStatement(string fullText, string textBeforeCaret)
+        {
+            if (string.IsNullOrWhiteSpace(textBeforeCaret)) return fullText;
+
+            try 
+            {
+                var matches = System.Text.RegularExpressions.Regex.Matches(fullText, @"\S+");
+                var beforeMatches = System.Text.RegularExpressions.Regex.Matches(textBeforeCaret, @"\S+");
+
+                if (beforeMatches.Count == 0) return fullText;
+
+                int activeIndex = beforeMatches.Count - 1;
+                int startIndex = 0;
+                string[] statementRoots = { "SELECT", "UPDATE", "DELETE", "INSERT", "MERGE", "TRUNCATE", "GO", ";" };
+                
+                // Scan backwards for DML roots
+                for (int i = activeIndex; i >= 0; i--)
+                {
+                    string cleanToken = matches[i].Value.ToUpperInvariant().Trim(new char[] { '(', ')', ';' });
+                    if (statementRoots.Contains(cleanToken) || matches[i].Value.Contains(";"))
+                    {
+                        startIndex = i;
+                        if (matches[i].Value.Contains(";") && cleanToken != "GO") {
+                            startIndex = i + 1; // Start strictly after the semicolon
+                        }
+                        
+                        // Heuristic guard: ignore nested SELECTs inside parentheses by checking leading parens
+                        int openParens = 0, closeParens = 0;
+                        for(int p = i; p <= activeIndex; p++) {
+                            openParens += matches[p].Value.Count(c => c == '(');
+                            closeParens += matches[p].Value.Count(c => c == ')');
+                        }
+                        if (openParens > closeParens) {
+                            // This was a subquery, keep looking backwards
+                            continue;
+                        }
+
+                        break; // Valid boundary found
+                    }
+                }
+
+                // Scan forwards for the NEXT DML root
+                int endIndex = matches.Count - 1;
+                for (int i = activeIndex + 1; i < matches.Count; i++)
+                {
+                    string cleanToken = matches[i].Value.ToUpperInvariant().Trim(new char[] { '(', ')', ';' });
+                    if (statementRoots.Contains(cleanToken) || matches[i].Value.Contains(";"))
+                    {
+                        int openParens = 0, closeParens = 0;
+                        for(int p = activeIndex; p <= i; p++) {
+                            openParens += matches[p].Value.Count(c => c == '(');
+                            closeParens += matches[p].Value.Count(c => c == ')');
+                        }
+                        if (closeParens > openParens) {
+                            continue; // Closing a subquery
+                        }
+
+                        endIndex = matches[i].Value.Contains(";") ? i : i - 1;
+                        break;
+                    }
+                }
+
+                if (startIndex > endIndex) return fullText; // Fail-safe
+                if (startIndex < 0) startIndex = 0;
+                if (endIndex >= matches.Count) endIndex = matches.Count - 1;
+                
+                var isolatedTokens = new System.Collections.Generic.List<string>();
+                for(int i = startIndex; i <= endIndex; i++) {
+                    isolatedTokens.Add(matches[i].Value);
+                }
+                
+                return string.Join(" ", isolatedTokens);
+            }
+            catch(Exception ex)
+            {
+                SQLsense.Infrastructure.OutputWindowLogger.LogError("Statement context isolation failed", ex);
+                return fullText; // If anything goes wrong, default to the full text
+            }
         }
     }
 }
