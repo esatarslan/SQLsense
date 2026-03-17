@@ -75,7 +75,7 @@
     <Compile Include="Core\Analysis\SqlAnalyzer.cs" />
     <Compile Include="Core\Session\SessionManager.cs" />
     <Compile Include="Core\Session\SessionTracker.cs" />
-    <Compile Include="Core\Analysis\ActiveStatementVisitor.cs" />
+    <Compile Include="Core\Analysis\SemanticAnalyzer.cs" />
     <Compile Include="Core\Analysis\ContextStateAnalyzer.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -95,10 +95,12 @@
     <Content Include="runtimes\win-x64\native\e_sqlite3.dll">
       <IncludeInVSIX>true</IncludeInVSIX>
       <VSIXSubPath>runtimes\win-x64\native</VSIXSubPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="runtimes\win-x86\native\e_sqlite3.dll">
       <IncludeInVSIX>true</IncludeInVSIX>
       <VSIXSubPath>runtimes\win-x86\native</VSIXSubPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
   <ItemGroup>

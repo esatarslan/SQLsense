@@ -52,115 +52,139 @@ namespace SQLsense
         public int Exec(ref Guid pguidCmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            char typedChar = char.MinValue;
+            bool didExecuteNatively = false;
+            int hresult = VSConstants.S_OK;
 
-            if (pguidCmdGroup == VSConstants.VSStd2K)
+            try
             {
-                var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
+                char typedChar = char.MinValue;
 
-                // 1. Intercept Navigation if Window is open
-                if (_completionWindow != null && _completionWindow.IsVisible)
+                if (pguidCmdGroup == VSConstants.VSStd2K)
                 {
-                    if (cmdId == VSConstants.VSStd2KCmdID.DOWN) { _completionWindow.MoveDown(); return VSConstants.S_OK; }
-                    if (cmdId == VSConstants.VSStd2KCmdID.UP) { _completionWindow.MoveUp(); return VSConstants.S_OK; }
-                    if (cmdId == VSConstants.VSStd2KCmdID.PAGEDN) { _completionWindow.MovePageDown(); return VSConstants.S_OK; }
-                    if (cmdId == VSConstants.VSStd2KCmdID.PAGEUP) { _completionWindow.MovePageUp(); return VSConstants.S_OK; }
-                    
-                    if (cmdId == VSConstants.VSStd2KCmdID.CANCEL) 
-                    { 
-                        _completionWindow.Hide(); 
-                        return VSConstants.S_OK; 
-                    }
-                    if (cmdId == VSConstants.VSStd2KCmdID.LEFT || 
-                        cmdId == VSConstants.VSStd2KCmdID.RIGHT || 
-                        cmdId == VSConstants.VSStd2KCmdID.HOME || 
-                        cmdId == VSConstants.VSStd2KCmdID.END)
+                    var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
+
+                    // 1. Intercept Navigation if Window is open
+                    if (_completionWindow != null && _completionWindow.IsVisible)
                     {
-                        _completionWindow.Hide();
-                    }
-                    
-                    if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
-                    {
-                        if (_completionWindow.HasSelection)
+                        if (cmdId == VSConstants.VSStd2KCmdID.DOWN) { _completionWindow.MoveDown(); return VSConstants.S_OK; }
+                        if (cmdId == VSConstants.VSStd2KCmdID.UP) { _completionWindow.MoveUp(); return VSConstants.S_OK; }
+                        if (cmdId == VSConstants.VSStd2KCmdID.PAGEDN) { _completionWindow.MovePageDown(); return VSConstants.S_OK; }
+                        if (cmdId == VSConstants.VSStd2KCmdID.PAGEUP) { _completionWindow.MovePageUp(); return VSConstants.S_OK; }
+                        
+                        if (cmdId == VSConstants.VSStd2KCmdID.CANCEL) 
+                        { 
+                            _completionWindow.Hide(); 
+                            return VSConstants.S_OK; 
+                        }
+                        if (cmdId == VSConstants.VSStd2KCmdID.LEFT || 
+                            cmdId == VSConstants.VSStd2KCmdID.RIGHT || 
+                            cmdId == VSConstants.VSStd2KCmdID.HOME || 
+                            cmdId == VSConstants.VSStd2KCmdID.END)
                         {
-                            _completionWindow.CommitSelection();
-                            return VSConstants.S_OK; // Swallow native insert
+                            _completionWindow.Hide();
+                        }
+                        
+                        if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
+                        {
+                            if (_completionWindow.HasSelection)
+                            {
+                                _completionWindow.CommitSelection();
+                                return VSConstants.S_OK; // Swallow native insert
+                            }
+                            else
+                            {
+                                _completionWindow.Hide();
+                            }
+                        }
+                    }
+
+                    // 2. Handle Ctrl+Space and native triggers
+                    if (cmdId == VSConstants.VSStd2KCmdID.COMPLETEWORD || 
+                        cmdId == VSConstants.VSStd2KCmdID.AUTOCOMPLETE || 
+                        cmdId == VSConstants.VSStd2KCmdID.SHOWMEMBERLIST)
+                    {
+                        TriggerCompletion();
+                        return VSConstants.S_OK; // Swallow native box completely
+                    }
+
+                    if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR)
+                    {
+                        if (pvaIn != IntPtr.Zero)
+                        {
+                            typedChar = (char)(ushort)Marshal.GetObjectForNativeVariant(pvaIn);
+                            if (typedChar == ' ' || typedChar == '\t')
+                            {
+                                if (TryExpandSnippet()) return VSConstants.S_OK;
+                            }
+                        }
+                    }
+                    else if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB || cmdId == VSConstants.VSStd2KCmdID.BACKTAB)
+                    {
+                        if (TryExpandSnippet()) return VSConstants.S_OK;
+                        if (cmdId == VSConstants.VSStd2KCmdID.TAB && TryExpandWildcard()) return VSConstants.S_OK;
+                    }
+                } // END: if (pguidCmdGroup == VSConstants.VSStd2K)
+
+                // Let the character be typed natively into the editor
+                hresult = _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
+                didExecuteNatively = true;
+
+                // Post-typing logic
+                if (hresult == VSConstants.S_OK && pguidCmdGroup == VSConstants.VSStd2K)
+                {
+                    var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
+                    
+                    if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.BACKSPACE)
+                    {
+                        bool isWindowVisible = _completionWindow != null && _completionWindow.IsVisible;
+                        bool isTypeCharTrigger = false;
+                        
+                        if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR && pvaIn != IntPtr.Zero)
+                        {
+                            char tChar = (char)(ushort)Marshal.GetObjectForNativeVariant(pvaIn);
+                            isTypeCharTrigger = (char.IsLetterOrDigit(tChar) || tChar == '@' || tChar == ' ' || tChar == ',' || tChar == '.');
+                            typedChar = tChar; // Capture for FormatKeywordsAsync later
+                        }
+
+                        bool isBackspaceWithVisibleWindow = cmdId == VSConstants.VSStd2KCmdID.BACKSPACE && isWindowVisible;
+
+                        if (isTypeCharTrigger || isBackspaceWithVisibleWindow)
+                        {
+                            bool showedCustomUI = TriggerCompletion();
+                            if (showedCustomUI)
+                            {
+                                Guid vsStd2KGroup = VSConstants.VSStd2K;
+                                _nextCommandTarget.Exec(ref vsStd2KGroup, (uint)VSConstants.VSStd2KCmdID.CANCEL, 0, IntPtr.Zero, IntPtr.Zero);
+                            }
                         }
                         else
                         {
-                            _completionWindow.Hide();
-                            // Fall through and let Visual Studio type the return/tab natively!
+                            _completionWindow?.Hide();
                         }
                     }
-                }
 
-                // 2. Handle Ctrl+Space and native triggers
-                if (cmdId == VSConstants.VSStd2KCmdID.COMPLETEWORD || 
-                    cmdId == VSConstants.VSStd2KCmdID.AUTOCOMPLETE || 
-                    cmdId == VSConstants.VSStd2KCmdID.SHOWMEMBERLIST)
-                {
-                    TriggerCompletion();
-                    return VSConstants.S_OK; // Swallow native box completely
-                }
-
-                if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR)
-                {
-                    typedChar = (char)(ushort)Marshal.GetObjectForNativeVariant(pvaIn);
-                    if (typedChar == ' ' || typedChar == '\t')
+                    if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
                     {
-                        if (TryExpandSnippet()) return VSConstants.S_OK; // Swallow space/tab if expanded
-                    }
-                }
-                else if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB || cmdId == VSConstants.VSStd2KCmdID.BACKTAB)
-                {
-                    if (TryExpandSnippet()) return VSConstants.S_OK; // Swallow if expanded
-                    if (cmdId == VSConstants.VSStd2KCmdID.TAB && TryExpandWildcard()) return VSConstants.S_OK;
-                }
-            }
-
-            // Let the character be typed natively into the editor
-            int hresult = _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
-
-            // Post-typing logic
-            if (hresult == VSConstants.S_OK && pguidCmdGroup == VSConstants.VSStd2K)
-            {
-                var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
-                
-                // Handle Auto-Complete popup updates
-                if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.BACKSPACE)
-                {
-                    bool isWindowVisible = _completionWindow != null && _completionWindow.IsVisible;
-                    bool isTypeCharTrigger = cmdId == VSConstants.VSStd2KCmdID.TYPECHAR && (char.IsLetterOrDigit(typedChar) || typedChar == '@' || typedChar == ' ' || typedChar == ',' || typedChar == '.');
-                    bool isBackspaceWithVisibleWindow = cmdId == VSConstants.VSStd2KCmdID.BACKSPACE && isWindowVisible;
-
-                    if (isTypeCharTrigger || isBackspaceWithVisibleWindow)
-                    {
-                        bool showedCustomUI = TriggerCompletion();
-                        if (showedCustomUI)
+                        if (typedChar == ' ' || typedChar == '\t' || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
                         {
-                            // Dismiss native SSMS IntelliSense actively so it doesn't steal focus from our WPF window.
-                            Guid vsStd2KGroup = VSConstants.VSStd2K;
-                            _nextCommandTarget.Exec(ref vsStd2KGroup, (uint)VSConstants.VSStd2KCmdID.CANCEL, 0, IntPtr.Zero, IntPtr.Zero);
+                            _ = FormatKeywordsAsync();
+                            ResetAnalysisTimer();
                         }
                     }
-                    else
-                    {
-                        _completionWindow?.Hide();
-                    }
                 }
 
-                // Trigger async keyword casing and research analysis timer
-                if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
-                {
-                    if (typedChar == ' ' || typedChar == '\t' || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
-                    {
-                        _ = FormatKeywordsAsync();
-                        ResetAnalysisTimer();
-                    }
-                }
+                return hresult;
             }
-
-            return hresult;
+            catch (Exception ex)
+            {
+                OutputWindowLogger.LogError($"Exec filter crash on Cmd: {nCmdID} - {ex.Message}", ex);
+                if (!didExecuteNatively)
+                {
+                    // Fallback securely so the user doesn't lose keystrokes (like Backspace / Left Arrow)
+                    return _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
+                }
+                return hresult;
+            }
         }
 
         private bool TriggerCompletion()
@@ -186,8 +210,66 @@ namespace SQLsense
                 
                 string currentWord = fullText.Substring(wordStart + 1, caretPosition.Position - (wordStart + 1));
 
+                // 1) Literal or Comment Safety Check
+                bool inString = false;
+                bool inLineComment = false;
+                bool inBlockComment = false;
+
+                for (int i = 0; i < textBeforeCaret.Length; i++)
+                {
+                    char c = textBeforeCaret[i];
+                    char nextC = i + 1 < textBeforeCaret.Length ? textBeforeCaret[i + 1] : '\0';
+
+                    if (!inString && !inLineComment && !inBlockComment)
+                    {
+                        if (c == '\'') inString = true;
+                        else if (c == '-' && nextC == '-') { inLineComment = true; i++; }
+                        else if (c == '/' && nextC == '*') { inBlockComment = true; i++; }
+                    }
+                    else if (inString)
+                    {
+                        if (c == '\'')
+                        {
+                            if (nextC == '\'') i++; // escaped quote
+                            else inString = false;
+                        }
+                    }
+                    else if (inLineComment)
+                    {
+                        if (c == '\n') inLineComment = false;
+                    }
+                    else if (inBlockComment)
+                    {
+                        if (c == '*' && nextC == '/') { inBlockComment = false; i++; }
+                    }
+                }
+
+                if (inString || inLineComment || inBlockComment)
+                {
+                    _completionWindow?.Hide();
+                    return false;
+                }
+
+                // 2) Pure Number Check (Don't trigger UI on literals like '123' or '1.5')
+                if (!string.IsNullOrWhiteSpace(currentWord))
+                {
+                    bool isAllDigits = true;
+                    int dotCount = 0;
+                    foreach(var ch in currentWord)
+                    {
+                        if (ch == '.') dotCount++;
+                        else if (!char.IsDigit(ch)) { isAllDigits = false; break; }
+                    }
+                    
+                    if (isAllDigits && dotCount <= 1)
+                    {
+                        _completionWindow?.Hide();
+                        return false;
+                    }
+                }
+
                 // Trigger background schema refresh implicitly on typing
-                SQLsense.Core.Completion.DatabaseSchemaProvider.TriggerRefreshInBackground();
+                _ = SQLsense.Core.Completion.DatabaseSchemaProvider.TriggerRefreshInBackgroundAsync();
 
                 // If they haven't typed a word yet (e.g., just hit space), we should ONLY show the window 
                 // if the AST explicitly commands a structured injection (like expecting SET or Columns)
@@ -305,10 +387,15 @@ namespace SQLsense
                     expansion = item.SnippetExpansion;
                 }
                 // If it's a normal Database Object, insert the full description (schema.name) which was stored there
+                // EXCEPT if it's an alias ("Projected Alias", "Alias for "), in which case we just want the alias name (item.Text).
                 else if ((item.IconType == UI.Completion.CompletionIconType.Table || 
                           item.IconType == UI.Completion.CompletionIconType.View || 
                           item.IconType == UI.Completion.CompletionIconType.Function ||
-                          item.IconType == UI.Completion.CompletionIconType.StoredProcedure) && !string.IsNullOrEmpty(item.Description) && item.Description != "Built-in Function" && !item.Description.StartsWith("Alias for "))
+                          item.IconType == UI.Completion.CompletionIconType.StoredProcedure) && 
+                          !string.IsNullOrEmpty(item.Description) && 
+                          item.Description != "Built-in Function" && 
+                          !item.Description.StartsWith("Alias for ") &&
+                          !item.Description.StartsWith("Projected Alias"))
                 {
                     expansion = item.Description;
                 }

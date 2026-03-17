@@ -74,6 +74,12 @@ namespace SQLsense.Core.Analysis
                                 {
                                     continue;
                                 }
+                                // Check if a table/alias has already been typed after FROM.
+                                // e.g., FROM dbo.Categories [caret] -> table finished, expect keyword
+                                if (HasTableOrAliasAfterFrom(tokens, i, currentIndex))
+                                {
+                                    return SqlContextState.Unknown; // Keyword-only zone
+                                }
                                 return SqlContextState.FromTables;
                             }
                             if (text == "JOIN")
@@ -117,6 +123,10 @@ namespace SQLsense.Core.Analysis
                             if (text == "INSERT") return SqlContextState.InsertTable;
                             if (text == "GROUP") return SqlContextState.GroupByColumns; // Simplification
                             if (text == "ORDER") return SqlContextState.OrderByColumns;
+
+                            // Non-structural tokens (identifiers, dots, operators, literals, parens, etc.)
+                            // Skip these and continue searching backwards for the nearest structural keyword.
+                            continue;
                         }
                     }
                 }
@@ -175,6 +185,105 @@ namespace SQLsense.Core.Analysis
             // If they are actively typing the identifier at EOF (like "UPDATE A"),
             // we return false because the table name isn't officially "closed" with a space yet.
             // They need Table suggestions!
+            return false;
+        }
+
+        /// <summary>
+        /// Checks if a table/view name (optionally followed by an alias) has been completed after FROM.
+        /// Returns true if the user has finished typing the table source and is now in keyword-only territory.
+        /// e.g., "FROM dbo.Categories " -> true  (table name closed with space)
+        /// e.g., "FROM dbo.Categories t0 " -> true  (table+alias closed)
+        /// e.g., "FROM " -> false  (still typing)
+        /// e.g., "FROM dbo." -> false  (schema prefix not complete)
+        /// e.g., "FROM dbo.Categories," -> false  (comma = another table expected)
+        /// </summary>
+        private static bool HasTableOrAliasAfterFrom(IList<TSqlParserToken> tokens, int fromIndex, int currentIndex)
+        {
+            bool foundIdentifier = false;
+            bool foundWhitespaceAfterIdentifier = false;
+            
+            for (int i = fromIndex + 1; i <= currentIndex; i++)
+            {
+                var type = tokens[i].TokenType;
+                
+                if (type == TSqlTokenType.EndOfFile)
+                {
+                    continue; // EOF doesn't count as whitespace after identifier
+                }
+
+                if (type == TSqlTokenType.WhiteSpace || 
+                    type == TSqlTokenType.SingleLineComment || 
+                    type == TSqlTokenType.MultilineComment)
+                {
+                    if (foundIdentifier)
+                    {
+                        foundWhitespaceAfterIdentifier = true;
+                    }
+                    continue;
+                }
+
+                // Dot is part of schema qualification (dbo.Categories) - continue building the identifier
+                if (type == TSqlTokenType.Dot)
+                {
+                    // Only reset whitespace flag if we haven't completed the table name yet
+                    if (!foundWhitespaceAfterIdentifier)
+                    {
+                        continue; // dbo. still part of table reference
+                    }
+                    // If we had whitespace after identifier but now see a dot, this is alias.column => not FROM zone anymore
+                    return false;
+                }
+
+                // Comma means user wants another table => not done
+                if (type == TSqlTokenType.Comma)
+                {
+                    return false;
+                }
+
+                // Left paren could be subquery "FROM (" or function
+                if (type == TSqlTokenType.LeftParenthesis)
+                {
+                    return false;
+                }
+
+                if (type == TSqlTokenType.Identifier || type == TSqlTokenType.QuotedIdentifier)
+                {
+                    if (foundWhitespaceAfterIdentifier)
+                    {
+                        // This is either an alias OR a keyword being typed.
+                        // We've found: FROM table [space] something
+                        // Check if this "something" is still being actively typed at the caret
+                        var tok = tokens[i];
+                        if (tok.Offset + tok.Text.Length >= tokens[currentIndex].Offset)
+                        {
+                            // The token is touching the caret - user may be typing alias or keyword.
+                            // We can't tell the difference, so return false to SHOW suggestions (keywords + potential)
+                            return false;
+                        }
+                        else
+                        {
+                            // Token is completed and there's more after it.
+                            // This was the alias. Mark that we've now consumed table+alias.
+                            // Look ahead to see if there's another whitespace after this alias.
+                            foundIdentifier = true;
+                            foundWhitespaceAfterIdentifier = false;
+                            continue;
+                        }
+                    }
+                    else
+                    {
+                        foundIdentifier = true;
+                    }
+                }
+            }
+            
+            // If we found an identifier with whitespace after it, and nothing more meaningful:
+            // It means the user finished typing the table (and optionally alias) and there's a trailing space.
+            if (foundIdentifier && foundWhitespaceAfterIdentifier)
+            {
+                return true;
+            }
+            
             return false;
         }
 
@@ -275,5 +384,6 @@ namespace SQLsense.Core.Analysis
             
             return false;
         }
+
     }
 }

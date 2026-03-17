@@ -37,48 +37,29 @@ namespace SQLsense.Core.Completion
             bool prioritizeTables = false;
             bool prioritizeColumns = false;
             HashSet<string> mentionedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var tableAliases = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var tableAliases = new Dictionary<string, SQLsense.Core.Analysis.AliasDefinition>(StringComparer.OrdinalIgnoreCase);
 
             if (!string.IsNullOrWhiteSpace(textBeforeCaret))
             {
                 SqlContextState state = ContextStateAnalyzer.DetermineState(fullText, textBeforeCaret.Length);
 
-                // ALIAS INTERCEPT MASTER SWITCH: Do not suggest anything if the user is literally inventing an alias mid-word
-                bool isTypingAliasDefinition = false;
                 bool endsWithSpaceOrPunctuation = textBeforeCaret.EndsWith(" ") || textBeforeCaret.EndsWith("\t") || textBeforeCaret.EndsWith("\n") || textBeforeCaret.EndsWith("\r") || textBeforeCaret.EndsWith(",") || textBeforeCaret.EndsWith(".");
                 
-                if (!endsWithSpaceOrPunctuation && state != SqlContextState.UpdateSetColumns)
+                // ALIAS INTERCEPT: Only suppress IntelliSense when we are CERTAIN the user is typing an alias.
+                // Per T-SQL BNF: The ONLY unambiguous case is after the "AS" keyword.
+                if (!endsWithSpaceOrPunctuation)
                 {
                     string trimmedBefore = textBeforeCaret.TrimEnd();
                     int lastSpace = trimmedBefore.LastIndexOfAny(new[] { ' ', '\t', '\n', '\r', ',', '(' });
-                    string prevWord = lastSpace >= 0 ? trimmedBefore.Substring(0, lastSpace).TrimEnd() : "none";
+                    string prevWord = lastSpace >= 0 ? trimmedBefore.Substring(0, lastSpace).TrimEnd() : "";
                     int prevWordLastSpace = prevWord.LastIndexOfAny(new[] { ' ', '\t', '\n', '\r', ',', '(' });
                     prevWord = prevWordLastSpace >= 0 ? prevWord.Substring(prevWordLastSpace + 1).ToUpperInvariant() : prevWord.ToUpperInvariant();
 
                     if (prevWord == "AS")
                     {
-                        isTypingAliasDefinition = true;
-                    }
-                    else
-                    {
-                        string strippedPrevWord = prevWord.Contains(".") ? prevWord.Substring(prevWord.LastIndexOf(".") + 1) : prevWord;
-                        strippedPrevWord = strippedPrevWord.Replace("[", "").Replace("]", "");
-                        
-                        // We need the schema objects to check if prevWord is a table
-                        var tmpObjects = DatabaseSchemaProvider.GetCachedObjects();
-                        if (System.Linq.Enumerable.Any(tmpObjects, o => (o.IconType == SQLsense.UI.Completion.CompletionIconType.Table || o.IconType == SQLsense.UI.Completion.CompletionIconType.View) 
-                                                   && o.Text.Equals(strippedPrevWord, StringComparison.OrdinalIgnoreCase)))
-                        {
-                            isTypingAliasDefinition = true;
-                        }
+                        return results; // Alias tanımlanıyor, IntelliSense kapatılsın
                     }
                 }
-
-                if (isTypingAliasDefinition)
-                {
-                    return results; // Return empty immediately so the UI gracefully hides while they invent their alias
-                }
-
 
                 if (state == SqlContextState.Unknown)
                 {
@@ -110,6 +91,8 @@ namespace SQLsense.Core.Completion
                             {
                                 // They finished typing a table or an alias. At this point, they expect structural keywords (WHERE, ON, JOIN, etc.)
                                 allowTables = false;
+                                allowViews = false;
+                                allowFunctions = false;
                                 prioritizeTables = false;
                             }
                         }
@@ -119,6 +102,12 @@ namespace SQLsense.Core.Completion
                 {
                     allowSPs = false;
                     prioritizeColumns = true;
+
+                    // In SELECT column context: suppress snippets so columns appear first
+                    if (state == SqlContextState.SelectColumns)
+                    {
+                        allowSnippets = false;
+                    }
 
                     if (state == SqlContextState.JoinOnCondition && textBeforeCaret.TrimEnd().EndsWith(" ON", StringComparison.OrdinalIgnoreCase))
                     {
@@ -196,25 +185,33 @@ namespace SQLsense.Core.Completion
                 {
                     try
                     {
-                        var parser = new TSql160Parser(true);
-                        using (var reader = new System.IO.StringReader(fullText))
+                        int caretPosition = textBeforeCaret.Length;
+                        int prefixStartIdx = Math.Max(0, caretPosition - searchPrefix.Length);
+                        
+                        // To prevent AST Healing step from removing the From clause by mistake when it sees an incomplete "SELECT "
+                        // We temporarily substitute the currently typed word with a valid expression "__dummy=1 "
+                        string safeSqlForParsing = fullText;
+                        if (searchPrefix.Length > 0 && prefixStartIdx + searchPrefix.Length <= safeSqlForParsing.Length)
                         {
-                            var fragment = parser.Parse(reader, out var errors);
-                            if (fragment != null)
-                            {
-                                int caretPosition = textBeforeCaret.Length;
-                                var activeVisitor = new ActiveStatementVisitor(caretPosition);
-                                fragment.Accept(activeVisitor);
+                            safeSqlForParsing = safeSqlForParsing.Remove(prefixStartIdx, searchPrefix.Length).Insert(prefixStartIdx, " __dummy=1 ");
+                        }
 
-                                // The activeVisitor safely extracted only the aliases constrained to our exact statement node
-                                foreach (var kvp in activeVisitor.ActiveAliases)
-                                {
+                        var fragment = SQLsense.Core.Analysis.AstHealer.HealAndParse(safeSqlForParsing, out var errors);
+                        
+                        if (fragment != null)
+                        {
+                            var activeVisitor = new SQLsense.Core.Analysis.ScopeAnalyzerVisitor(caretPosition);
+                            fragment.Accept(activeVisitor);
+
+                            // The activeVisitor safely extracted only the aliases constrained to our exact statement node
+                            foreach (var kvp in activeVisitor.ActiveAliases)
+                            {
                                     tableAliases[kvp.Key] = kvp.Value;
                                     
                                     // Populate mentionedTables natively from the confirmed AST values
-                                    if (!mentionedTables.Contains(kvp.Value))
+                                    if (!string.IsNullOrEmpty(kvp.Value.BoundObjectName) && !mentionedTables.Contains(kvp.Value.BoundObjectName))
                                     {
-                                        mentionedTables.Add(kvp.Value);
+                                        mentionedTables.Add(kvp.Value.BoundObjectName);
                                     }
                                 }
 
@@ -258,17 +255,17 @@ namespace SQLsense.Core.Completion
                                                 
                                                 if (potentialAliasUpper == "AS" && i + 3 < fallbackWords.Length)
                                                 {
-                                                    tableAliases[fallbackWords[i + 3]] = tName.ToLowerInvariant();
+                                                    string name = fallbackWords[i + 3];
+                                                    tableAliases[name] = new SQLsense.Core.Analysis.AliasDefinition { AliasName = name, BoundObjectName = tName.ToLowerInvariant(), SourceType = SQLsense.Core.Analysis.AliasSourceType.Table };
                                                 }
                                                 // Exclude common structural keywords from being mistakenly parsed as aliases
                                                 else if (potentialAliasUpper != "ON" && potentialAliasUpper != "WHERE" && potentialAliasUpper != "JOIN" && potentialAliasUpper != "INNER" && potentialAliasUpper != "LEFT" && potentialAliasUpper != "RIGHT" && potentialAliasUpper != "OUTER" && potentialAliasUpper != "CROSS" && potentialAliasUpper != "GROUP" && potentialAliasUpper != "ORDER" && potentialAliasUpper != "SET" && potentialAliasUpper != "VALUES" && potentialAliasUpper != "OUTPUT")
                                                 {
-                                                    tableAliases[potentialAlias] = tName.ToLowerInvariant();
+                                                    tableAliases[potentialAlias] = new SQLsense.Core.Analysis.AliasDefinition { AliasName = potentialAlias, BoundObjectName = tName.ToLowerInvariant(), SourceType = SQLsense.Core.Analysis.AliasSourceType.Table };
                                                 }
                                             }
                                         }
                                     }
-                                }
                             }
                         }
                     }
@@ -336,9 +333,13 @@ namespace SQLsense.Core.Completion
             {
                 foreach (var alias in tableAliases)
                 {
+                    string desc = alias.Value.SourceType == SQLsense.Core.Analysis.AliasSourceType.Table
+                        ? "Alias for " + alias.Value.BoundObjectName
+                        : "Projected Alias (" + alias.Value.ProjectedColumns.Count + " cols)";
+
                     var aliasItem = new SQLsense.UI.Completion.CompletionItem(
                         alias.Key, 
-                        "Alias for " + alias.Value, 
+                        desc, 
                         SQLsense.UI.Completion.CompletionIconType.Table
                     );
                     AddItem(aliasItem, alias.Key);
@@ -356,15 +357,62 @@ namespace SQLsense.Core.Completion
                 {
                     var parts = searchPrefix.Split(new[] { '.' }, 2);
                     tableOrAlias = parts[0];
-                    searchPrefix = parts[1]; // Narrow down search to just the column part
+                    string columnPart = parts[1]; 
 
                     if (tableAliases.ContainsKey(tableOrAlias))
                     {
-                        targetTableConstraint = tableAliases[tableOrAlias].ToLowerInvariant();
+                        var source = tableAliases[tableOrAlias];
+                        if (source.SourceType == SQLsense.Core.Analysis.AliasSourceType.Table || source.IsStarExpanded)
+                        {
+                            targetTableConstraint = source.BoundObjectName?.ToLowerInvariant();
+                        }
+                        else if (source.SourceType == SQLsense.Core.Analysis.AliasSourceType.Projected)
+                        {
+                            var dbCols = DatabaseSchemaProvider.GetCachedColumns();
+                            
+                            foreach (var pColName in source.ProjectedColumns)
+                            {
+                                // Try to find its description from database metadata if possible
+                                var dbMatch = dbCols.FirstOrDefault(c => c.Text.Equals(pColName, StringComparison.OrdinalIgnoreCase));
+                                string desc = dbMatch?.Description ?? "Projected Column";
+                                var icon = dbMatch?.IconType ?? SQLsense.UI.Completion.CompletionIconType.Column;
+
+                                var pCol = new SQLsense.UI.Completion.CompletionItem(pColName, desc, icon);
+                                // DO NOT call AddItem here to avoid double-adding. We will add to uniqueColumns/results in Phase 2.
+                                // But we MUST record its priority score now.
+                                matchScores[pCol] = -100; 
+                            }
+                            
+                            // Prevent normal column scanning from adding non-projected columns,
+                            // AND use this special flag to ensure Phase 2 results includes our projects
+                            targetTableConstraint = "FORCE_PROJECTION_COLUMNS_ONLY"; 
+                        }
                     }
                     else
                     {
                         targetTableConstraint = tableOrAlias.ToLowerInvariant();
+                    }
+                    
+                    searchPrefix = columnPart; // Narrow down search to just the column part
+                }
+                else
+                {
+                    // No prefix dot was typed. We should still add columns from any projected aliases available in scope!
+                    var dbCols = DatabaseSchemaProvider.GetCachedColumns();
+                    foreach (var source in tableAliases.Values)
+                    {
+                        if (source.SourceType == SQLsense.Core.Analysis.AliasSourceType.Projected && !source.IsStarExpanded)
+                        {
+                            foreach (var pColName in source.ProjectedColumns)
+                            {
+                                var dbMatch = dbCols.FirstOrDefault(c => c.Text.Equals(pColName, StringComparison.OrdinalIgnoreCase));
+                                string desc = dbMatch?.Description ?? "Projected Column";
+                                var icon = dbMatch?.IconType ?? SQLsense.UI.Completion.CompletionIconType.Column;
+
+                                var pCol = new SQLsense.UI.Completion.CompletionItem(pColName, desc, icon);
+                                matchScores[pCol] = -90; // Slightly lower priority than explicit dot prefix, but still high
+                            }
+                        }
                     }
                 }
 
@@ -374,8 +422,38 @@ namespace SQLsense.Core.Completion
                     // De-duplicate column suggestions if they have the exact same name to prevent overwhelming lists
                     var uniqueColumns = new Dictionary<string, SQLsense.UI.Completion.CompletionItem>();
 
+                    // Special case: If we already forced projected columns, we should ensure results list includes them
+                    bool isForcedProjection = targetTableConstraint == "FORCE_PROJECTION_COLUMNS_ONLY";
+                    
+                    // Always add projected columns that were queued up in matchScores, even if not forced
+                    foreach (var kvp in matchScores)
+                    {
+                        if (kvp.Value <= -90) // Includes -100 forced and -90 generic projected
+                        {
+                            var pItem = kvp.Key;
+
+                            // If we have a search prefix, filter projected columns by it
+                            if (!string.IsNullOrEmpty(searchPrefix) && !pItem.Text.ToLowerInvariant().Contains(searchPrefix))
+                            {
+                                continue;
+                            }
+
+                            // Apply snippet expansion if we have an alias (e.g. t0.MyTitle) AND we are in forced dotted mode
+                            if (isForcedProjection && !string.IsNullOrEmpty(tableOrAlias))
+                            {
+                                pItem.SnippetExpansion = tableOrAlias + "." + pItem.Text;
+                            }
+                            
+                            if (!uniqueColumns.ContainsKey(pItem.Text))
+                                uniqueColumns[pItem.Text] = pItem;
+                        }
+                    }
+
                     foreach (var col in columns)
                     {
+                        // If we are in forced projection mode, ONLY show projected columns (already in uniqueColumns)
+                        if (isForcedProjection) break;
+
                         string colLower = col.Text.ToLowerInvariant();
                         if (string.IsNullOrEmpty(searchPrefix) || colLower.Contains(searchPrefix))
                         {
@@ -407,7 +485,7 @@ namespace SQLsense.Core.Completion
                                         // via regular typing, check if its parent table ACTUALLY HAS an alias we can prepend.
                                         if (string.IsNullOrEmpty(tableOrAlias))
                                         {
-                                            var reversedAliasMatch = tableAliases.FirstOrDefault(x => x.Value == tbl);
+                                            var reversedAliasMatch = tableAliases.FirstOrDefault(x => string.Equals(x.Value.BoundObjectName, tbl, StringComparison.OrdinalIgnoreCase));
                                             if (!string.IsNullOrEmpty(reversedAliasMatch.Key))
                                             {
                                                 tableOrAlias = reversedAliasMatch.Key;
@@ -483,15 +561,17 @@ namespace SQLsense.Core.Completion
 
                     if (prioritizeTables)
                     {
-                        if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Table || x.IconType == SQLsense.UI.Completion.CompletionIconType.View) return 0;
+                        if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Table) return 0;
+                        if (x.IconType == SQLsense.UI.Completion.CompletionIconType.View) return 1;
                         if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Column) return 4; 
                     }
 
                     // Default ordering
-                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Table || x.IconType == SQLsense.UI.Completion.CompletionIconType.View) return 2;
-                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Column) return 3;
-                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Function || x.IconType == SQLsense.UI.Completion.CompletionIconType.StoredProcedure) return 4;
-                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Keyword) return 5;
+                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Table) return 2;
+                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.View) return 3;
+                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Column) return 4;
+                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Function || x.IconType == SQLsense.UI.Completion.CompletionIconType.StoredProcedure) return 5;
+                    if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Keyword) return 6;
                     
                     return 10;
                 })

@@ -20,6 +20,15 @@ Start-Sleep -Seconds 2 # Give it a moment to release handles
 
 Write-Host "Deploying $extensionName to $targetDir..." -ForegroundColor Cyan
 
+Write-Host "Searching for any existing SQLsense installations in other folders to prevent conflicts..." -ForegroundColor Yellow
+Get-ChildItem -Path "$SSMSPath\Extensions" -Directory | ForEach-Object {
+    $dllPath = Join-Path $_.FullName "SQLsense.dll"
+    if (Test-Path $dllPath) {
+        Write-Host "Found existing SQLsense in: $($_.FullName). Removing..." -ForegroundColor Red
+        Remove-Item -Path $_.FullName -Force -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
 if (Test-Path $targetDir) {
     Write-Host "Cleaning up old extension files..." -ForegroundColor Yellow
     Remove-Item -Path "$targetDir\*" -Force -Recurse

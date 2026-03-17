@@ -42,39 +42,50 @@ namespace SQLsense
 
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
         {
-            await this.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
-
-            Settings = (UI.GeneralOptionsPage)GetDialogPage(typeof(UI.GeneralOptionsPage));
-            
-            Infrastructure.OutputWindowLogger.Initialize(this);
-            Infrastructure.AnalysisErrorProvider.Initialize(this);
-            Infrastructure.OutputWindowLogger.Log("SQLsense Package Initialized.");
-            
-            await FormatSqlCommand.InitializeAsync(this);
-            await SettingsCommand.InitializeAsync(this);
-
-            if (Settings?.EnableSessionRecovery == true)
+            try
             {
-                _sessionManager = new SessionManager();
-                _sessionTracker = new SessionTracker(this, _sessionManager);
-                await _sessionTracker.InitializeAsync();
-                
-                // Run restoration with a slight delay to ensure SSMS is ready
-                _ = System.Threading.Tasks.Task.Run(async () => {
-                    await System.Threading.Tasks.Task.Delay(2000);
-                    await JoinableTaskFactory.SwitchToMainThreadAsync();
-                    await RestoreSessionsAsync();
-                });
-            }
+                await this.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
 
-            // Suppress native SSMS IntelliSense to prevent collision with our WPF box
-            await SuppressNativeIntelliSenseAsync();
+                Settings = (UI.GeneralOptionsPage)GetDialogPage(typeof(UI.GeneralOptionsPage));
+                
+                Infrastructure.OutputWindowLogger.Initialize(this);
+                Infrastructure.AnalysisErrorProvider.Initialize(this);
+                Infrastructure.OutputWindowLogger.Log("SQLsense Package Initialized.");
+                
+                await FormatSqlCommand.InitializeAsync(this);
+                await SettingsCommand.InitializeAsync(this);
+
+                if (Settings?.EnableSessionRecovery == true)
+                {
+                    _sessionManager = new SessionManager();
+                    _sessionTracker = new SessionTracker(this, _sessionManager);
+                    await _sessionTracker.InitializeAsync();
+                    
+                    // Run restoration with a slight delay to ensure SSMS is ready
+                    _ = System.Threading.Tasks.Task.Run(async () => {
+                        await System.Threading.Tasks.Task.Delay(2000);
+                        await JoinableTaskFactory.SwitchToMainThreadAsync();
+                        await RestoreSessionsAsync();
+                    });
+                }
+
+                // Suppress native SSMS IntelliSense to prevent collision with our WPF box
+                await SuppressNativeIntelliSenseAsync();
+            }
+            catch (Exception ex)
+            {
+                string path = Path.Combine(Environment.GetEnvironmentVariable("TEMP"), "SQLsense_Init_Error.log");
+                File.WriteAllText(path, ex.ToString());
+                throw;
+            }
         }
 
         private async System.Threading.Tasks.Task SuppressNativeIntelliSenseAsync()
         {
             try
             {
+                await JoinableTaskFactory.SwitchToMainThreadAsync();
+
                 var dte = await GetServiceAsync(typeof(SDTE)) as DTE2;
                 if (dte == null) return;
 

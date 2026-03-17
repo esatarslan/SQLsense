@@ -28,9 +28,14 @@ namespace SQLsense.Tests
             
             var mockColumns = new List<CompletionItem>
             {
-                new CompletionItem("Id", "int", CompletionIconType.Column) { Description = "Advert" },
-                new CompletionItem("Title", "varchar", CompletionIconType.Column) { Description = "Advert" },
-                new CompletionItem("Price", "decimal", CompletionIconType.Column) { Description = "Advert" }
+                new CompletionItem("Id", "dbo.Advert", CompletionIconType.Column),
+                new CompletionItem("Title", "dbo.Advert", CompletionIconType.Column),
+                new CompletionItem("CategoryId", "dbo.Advert", CompletionIconType.Column),
+                new CompletionItem("Price", "dbo.Advert", CompletionIconType.Column),
+                new CompletionItem("CategoryID", "dbo.Categories", CompletionIconType.Column),
+                new CompletionItem("CategoryName", "dbo.Categories", CompletionIconType.Column),
+                new CompletionItem("Description", "dbo.Categories", CompletionIconType.Column),
+                new CompletionItem("Picture", "dbo.Categories", CompletionIconType.Column)
             };
 
             DatabaseSchemaProvider.SetMockObjects(mockObjects);
@@ -63,7 +68,7 @@ namespace SQLsense.Tests
             // EditorCommandFilter handles the word splitting. We need to simulate the prefix that EditorCommandFilter yields.
             string prefix = "t0.";
             
-            var results = _engine.GetCompletions(prefix, fullText, prefix);
+            var results = _engine.GetCompletions(prefix, textBeforeCaret, fullText);
             var columns = results.Where(r => r.IconType == CompletionIconType.Column).ToList();
 
             ClassicAssert.IsTrue(columns.Any(c => c.Text == "Title"), "Should return Advert columns");
@@ -136,6 +141,153 @@ namespace SQLsense.Tests
             TestContext.WriteLine($"Top 5 for 'w': {string.Join(", ", resultsW.Take(5).Select(x => x.Text))}");
 
             ClassicAssert.IsTrue(resultsU.Any(x => x.Text == "UPDATE"), "Should suggest UPDATE when typing 'u'");
+        }
+        [Test]
+        public void GetCompletions_WhereClause_PrioritizesIdColumns()
+        {
+            string fullText = "SELECT * FROM Advert WHERE ";
+            var results = _engine.GetCompletions("", fullText, fullText);
+
+            // Columns should dominate over functions or keywords, and 'Id' should ideally have 300 score. 
+            // The top result should be a column.
+            ClassicAssert.IsTrue(results.Any(), "Should return completions");
+            var topResult = results.First();
+            ClassicAssert.AreEqual(CompletionIconType.Column, topResult.IconType, "Columns should be at the absolute top of the WHERE clause suggestions");
+        }
+
+        [Test]
+        public void GetCompletions_JoinOnClause_PrioritizesIdColumns()
+        {
+            string fullText = "SELECT * FROM Advert a INNER JOIN Users u ON ";
+            var results = _engine.GetCompletions("", fullText, fullText);
+
+            // Id-like columns (+400) should be prioritized heavily in ON clauses
+            var topResult = results.First();
+            
+            // Wait, we have the "Smart JOIN" snippet as +600 according to my score definition.
+            ClassicAssert.IsTrue(topResult.IconType == CompletionIconType.Snippet && topResult.Description == "Smart JOIN" || topResult.Text.EndsWith("Id", System.StringComparison.OrdinalIgnoreCase), "Top result in ON clause must be a Smart Join snippet or an Id column");
+            
+            var topColumn = results.First(r => r.IconType == CompletionIconType.Column);
+            ClassicAssert.AreEqual("Id", topColumn.Text, "The first suggested column in an ON clause MUST be the Id column (FK/PK prioritisation)");
+        }
+
+        [Test]
+        public void GetCompletions_FromClause_PrioritizesTables()
+        {
+            string fullText = "SELECT * FROM ";
+            var results = _engine.GetCompletions("", fullText, fullText);
+
+            var topResult = results.First();
+            ClassicAssert.IsTrue(topResult.IconType == CompletionIconType.Table || topResult.IconType == CompletionIconType.View, "Tables/Views must strictly dominate the FROM clause (+300p)");
+        }
+
+        [Test]
+        public void GetCompletions_AliasDot_ShowsColumns()
+        {
+            string prefix = "t0.";
+            string textBeforeCaret = "SELECT * FROM dbo.Advert t0 WHERE t0.";
+            string fullText = "SELECT * FROM dbo.Advert t0 WHERE t0.Id = 1";
+            
+            var results = _engine.GetCompletions(prefix, textBeforeCaret, fullText);
+            ClassicAssert.IsNotEmpty(results, "Completions should not be empty for an alias dot context");
+        }
+
+        [Test]
+        public void GetCompletions_Alias_Subquery_ResolvesOuterAlias()
+        {
+            string prefix = "t0.";
+            string textBeforeCaret = "SELECT t0.";
+            string fullText = "SELECT t0. FROM (SELECT * FROM dbo.Advert st0 WHERE st0.Id = 1) t0 WHERE t0.Id = 1";
+            
+            var results = _engine.GetCompletions(prefix, textBeforeCaret, fullText);
+
+            ClassicAssert.IsNotEmpty(results, "Completions should not be empty when typing alias dot for a subquery");
+
+            var firstItem = results.First();
+            ClassicAssert.AreEqual(CompletionIconType.Column, firstItem.IconType, "First item is not Column after subquery alias dot");
+        }
+
+        [Test]
+        public void GetCompletions_Subquery_OnlyShowsProjectedColumns()
+        {
+            // Case: Subquery projects specific columns. Alias should ONLY show those columns.
+            string prefix = "t0.";
+            string textBeforeCaret = "SELECT t0.";
+            string fullText = "SELECT t0. FROM (SELECT Id, Title AS MyTitle FROM dbo.Advert) t0";
+            
+            var results = _engine.GetCompletions(prefix, textBeforeCaret, fullText);
+
+            ClassicAssert.IsNotEmpty(results, "Results should not be empty for projected subquery");
+            
+            bool hasId = results.Any(r => r.Text == "Id");
+            bool hasMyTitle = results.Any(r => r.Text == "MyTitle");
+            bool hasHiddenColumn = results.Any(r => r.Text == "CategoryId"); // This exists in Advert but NOT in this projection
+
+            ClassicAssert.IsTrue(hasId, "Id column was missing from projection");
+            ClassicAssert.IsTrue(hasMyTitle, "Aliased column 'MyTitle' was missing from projection");
+            ClassicAssert.IsFalse(hasHiddenColumn, "Unprojected column 'CategoryId' leaked through alias!");
+        }
+
+        [Test]
+        public void GetCompletions_Subquery_StarExpansion()
+        {
+            // Case: Subquery uses SELECT *. Alias should show ALL columns of the underlying table.
+            string prefix = "t0.";
+            string textBeforeCaret = "SELECT t0.";
+            string fullText = "SELECT t0. FROM (SELECT * FROM dbo.Advert) t0";
+            
+            var results = _engine.GetCompletions(prefix, textBeforeCaret, fullText);
+
+            ClassicAssert.IsNotEmpty(results, "Results should not be empty for star-expanded subquery");
+            
+            bool hasId = results.Any(r => r.Text == "Id");
+            bool hasCategoryId = results.Any(r => r.Text == "CategoryId");
+
+            ClassicAssert.IsTrue(hasId, "Id column missing in star expansion");
+            ClassicAssert.IsTrue(hasCategoryId, "CategoryId column missing in star expansion");
+        }
+
+        [Test]
+        public void GetCompletions_Alias_Subquery_WithSpecificColumns_UserCase()
+        {
+            // The exact query from the user's screenshot
+            string prefix = "t0.";
+            string textBeforeCaret = "SELECT t0.";
+            string fullText = "SELECT t0. FROM (SELECT st0.CategoryID, st0.CategoryName FROM dbo.Categories st0 WHERE st0.CategoryID = 1) t0 WHERE CategoryID = 1";
+            
+            var results = _engine.GetCompletions(prefix, textBeforeCaret, fullText);
+
+            ClassicAssert.IsNotEmpty(results, "Results should not be empty");
+            
+            bool hasCategoryId = false;
+            foreach (var r in results)
+            {
+                if (r.Text == "CategoryID") hasCategoryId = true;
+                Console.WriteLine($"Result: {r.Text} (Score calculated by checking order)");
+            }
+
+            // Verify it is in the results AND it should be one of the top results (index < 5)
+            ClassicAssert.IsTrue(hasCategoryId, "CategoryID is entirely missing from results!");
+            var topNames = results.Take(10).Select(x => x.Text).ToList();
+            ClassicAssert.IsTrue(topNames.Contains("CategoryID"), "CategoryID is in results, but NOT sorted to the top. Top items: " + string.Join(", ", topNames));
+            
+            // Critical check for leakage:
+            bool hasDescription = results.Any(r => r.Text == "Description");
+            ClassicAssert.IsFalse(hasDescription, "Leaked column 'Description' from dbo.Categories despite being a projected subquery!");
+        }
+        [Test]
+        public void GetCompletions_Alias_Subquery_EmptyPrefix_UserCase()
+        {
+            // The exact query from the user's screenshot, but the user typed space or invoked completion manually
+            string prefix = "";
+            string textBeforeCaret = "SELECT t0. ";
+            string fullText = "SELECT t0. FROM (SELECT st0.CategoryID, st0.CategoryName FROM dbo.Categories st0 WHERE st0.CategoryID = 1) t0 WHERE CategoryID = 1";
+            
+            var results = _engine.GetCompletions(prefix, textBeforeCaret, fullText);
+
+            // Even if the prefix is empty, Description should NOT leak from the inner query!
+            bool hasDescription = results.Any(r => r.Text == "Description");
+            ClassicAssert.IsFalse(hasDescription, "Leaked column 'Description' from dbo.Categories when prefix is empty (scope bug)");
         }
     }
 }
