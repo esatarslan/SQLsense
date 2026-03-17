@@ -20,6 +20,15 @@ Start-Sleep -Seconds 2 # Give it a moment to release handles
 
 Write-Host "Deploying $extensionName to $targetDir..." -ForegroundColor Cyan
 
+Write-Host "Searching for any existing SQLsense installations in other folders to prevent conflicts..." -ForegroundColor Yellow
+Get-ChildItem -Path "$SSMSPath\Extensions" -Directory | ForEach-Object {
+    $dllPath = Join-Path $_.FullName "SQLsense.dll"
+    if (Test-Path $dllPath) {
+        Write-Host "Found existing SQLsense in: $($_.FullName). Removing..." -ForegroundColor Red
+        Remove-Item -Path $_.FullName -Force -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
 if (Test-Path $targetDir) {
     Write-Host "Cleaning up old extension files..." -ForegroundColor Yellow
     Remove-Item -Path "$targetDir\*" -Force -Recurse
@@ -48,13 +57,21 @@ Get-ChildItem -Path $mefCachePath -Include * -Recurse | Remove-Item -Recurse -Fo
 $extensionCachePath = "$env:LOCALAPPDATA\Microsoft\SSMS\22.0_*\Extensions\ExtensionMetadataCache.mpack"
 Get-ChildItem -Path $extensionCachePath -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
-Write-Host "Forcing SSMS to rebuild its UI Menu Cache..." -ForegroundColor Yellow
+Write-Host "Clearing SQLsense local cache from AppData Extensions folder..." -ForegroundColor Yellow
+$appDataExtensionsPath = "$env:LOCALAPPDATA\Microsoft\SSMS\22.0_*\Extensions\SQLsense"
+Get-ChildItem -Path $env:LOCALAPPDATA\Microsoft\SSMS\22.0_* -Directory -Filter "Extensions" | ForEach-Object {
+    $sqlsenseFolder = Join-Path $_.FullName "SQLsense"
+    if (Test-Path $sqlsenseFolder) {
+        Write-Host "Removing leftover AppData cache at: $sqlsenseFolder" -ForegroundColor Gray
+        Remove-Item -Path $sqlsenseFolder -Force -Recurse -ErrorAction SilentlyContinue
+    }
+}
+
+Write-Host "Forcing SSMS to rebuild its UI Menu & Extension Cache..." -ForegroundColor Yellow
 $ssmsExe = "$SSMSPath\Ssms.exe"
 if (Test-Path $ssmsExe) {
-    Start-Process -FilePath $ssmsExe -ArgumentList "/updateconfiguration" -Wait
+    Start-Process -FilePath $ssmsExe -ArgumentList "/setup" -Wait
     Write-Host "UI Cache rebuilt successfully." -ForegroundColor Green
 }
 
 Write-Host "Deployment complete! You can now start SSMS." -ForegroundColor Green
-
-

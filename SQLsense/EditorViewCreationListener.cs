@@ -33,11 +33,7 @@ namespace SQLsense
             filter._nextCommandTarget = next;
 
             // Start preloading the database schema in the background so it's ready for auto-complete
-            _ = System.Threading.Tasks.Task.Run(() => {
-                try {
-                    SQLsense.Core.Completion.DatabaseSchemaProvider.TriggerRefreshInBackground();
-                } catch { }
-            });
+            _ = SQLsense.Core.Completion.DatabaseSchemaProvider.TriggerRefreshInBackgroundAsync();
         }
     }
 }

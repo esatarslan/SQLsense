@@ -52,112 +52,142 @@ namespace SQLsense
         public int Exec(ref Guid pguidCmdGroup, uint nCmdID, uint nCmdexecopt, IntPtr pvaIn, IntPtr pvaOut)
         {
             ThreadHelper.ThrowIfNotOnUIThread();
-            char typedChar = char.MinValue;
+            bool didExecuteNatively = false;
+            int hresult = VSConstants.S_OK;
 
-            if (pguidCmdGroup == VSConstants.VSStd2K)
+            try
             {
-                var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
+                char typedChar = char.MinValue;
 
-                // 1. Intercept Navigation if Window is open
-                if (_completionWindow != null && _completionWindow.IsVisible)
+                if (pguidCmdGroup == VSConstants.VSStd2K)
                 {
-                    if (cmdId == VSConstants.VSStd2KCmdID.DOWN) { _completionWindow.MoveDown(); return VSConstants.S_OK; }
-                    if (cmdId == VSConstants.VSStd2KCmdID.UP) { _completionWindow.MoveUp(); return VSConstants.S_OK; }
-                    if (cmdId == VSConstants.VSStd2KCmdID.PAGEDN) { _completionWindow.MovePageDown(); return VSConstants.S_OK; }
-                    if (cmdId == VSConstants.VSStd2KCmdID.PAGEUP) { _completionWindow.MovePageUp(); return VSConstants.S_OK; }
-                    
-                    if (cmdId == VSConstants.VSStd2KCmdID.CANCEL) 
-                    { 
-                        _completionWindow.Hide(); 
-                        return VSConstants.S_OK; 
-                    }
-                    if (cmdId == VSConstants.VSStd2KCmdID.LEFT || 
-                        cmdId == VSConstants.VSStd2KCmdID.RIGHT || 
-                        cmdId == VSConstants.VSStd2KCmdID.HOME || 
-                        cmdId == VSConstants.VSStd2KCmdID.END)
+                    var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
+
+                    // 1. Intercept Navigation if Window is open
+                    if (_completionWindow != null && _completionWindow.IsVisible)
                     {
-                        _completionWindow.Hide();
-                    }
-                    
-                    if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
-                    {
-                        if (_completionWindow.HasSelection)
+                        if (cmdId == VSConstants.VSStd2KCmdID.DOWN) { _completionWindow.MoveDown(); return VSConstants.S_OK; }
+                        if (cmdId == VSConstants.VSStd2KCmdID.UP) { _completionWindow.MoveUp(); return VSConstants.S_OK; }
+                        if (cmdId == VSConstants.VSStd2KCmdID.PAGEDN) { _completionWindow.MovePageDown(); return VSConstants.S_OK; }
+                        if (cmdId == VSConstants.VSStd2KCmdID.PAGEUP) { _completionWindow.MovePageUp(); return VSConstants.S_OK; }
+                        
+                        if (cmdId == VSConstants.VSStd2KCmdID.CANCEL) 
+                        { 
+                            _completionWindow.Hide(); 
+                            return VSConstants.S_OK; 
+                        }
+                        if (cmdId == VSConstants.VSStd2KCmdID.LEFT || 
+                            cmdId == VSConstants.VSStd2KCmdID.RIGHT || 
+                            cmdId == VSConstants.VSStd2KCmdID.HOME || 
+                            cmdId == VSConstants.VSStd2KCmdID.END)
                         {
-                            _completionWindow.CommitSelection();
-                            return VSConstants.S_OK; // Swallow native insert
+                            _completionWindow.Hide();
+                        }
+                        
+                        if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
+                        {
+                            if (_completionWindow.HasSelection)
+                            {
+                                _completionWindow.CommitSelection();
+                                return VSConstants.S_OK; // Swallow native insert
+                            }
+                            else
+                            {
+                                _completionWindow.Hide();
+                            }
+                        }
+                    }
+
+                    // 2. Handle Ctrl+Space and native triggers
+                    if (cmdId == VSConstants.VSStd2KCmdID.COMPLETEWORD || 
+                        cmdId == VSConstants.VSStd2KCmdID.AUTOCOMPLETE || 
+                        cmdId == VSConstants.VSStd2KCmdID.SHOWMEMBERLIST)
+                    {
+                        TriggerCompletion();
+                        return VSConstants.S_OK; // Swallow native box completely
+                    }
+
+                    if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR)
+                    {
+                        if (pvaIn != IntPtr.Zero)
+                        {
+                            typedChar = (char)(ushort)Marshal.GetObjectForNativeVariant(pvaIn);
+                            if (typedChar == ' ' || typedChar == '\t')
+                            {
+                                if (TryExpandSnippet()) return VSConstants.S_OK;
+                            }
+                        }
+                    }
+                    else if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB || cmdId == VSConstants.VSStd2KCmdID.BACKTAB)
+                    {
+                        if (TryExpandSnippet()) return VSConstants.S_OK;
+                        if (cmdId == VSConstants.VSStd2KCmdID.TAB && TryExpandWildcard()) return VSConstants.S_OK;
+                    }
+                } // END: if (pguidCmdGroup == VSConstants.VSStd2K)
+
+                // Let the character be typed natively into the editor
+                hresult = _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
+                didExecuteNatively = true;
+
+                // Post-typing logic
+                if (hresult == VSConstants.S_OK && pguidCmdGroup == VSConstants.VSStd2K)
+                {
+                    var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
+                    
+                    if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.BACKSPACE)
+                    {
+                        bool isWindowVisible = _completionWindow != null && _completionWindow.IsVisible;
+                        bool isTypeCharTrigger = false;
+                        
+                        if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR && pvaIn != IntPtr.Zero)
+                        {
+                            char tChar = (char)(ushort)Marshal.GetObjectForNativeVariant(pvaIn);
+                            isTypeCharTrigger = (char.IsLetterOrDigit(tChar) || tChar == '@' || tChar == ' ' || tChar == ',' || tChar == '.');
+                            typedChar = tChar; // Capture for FormatKeywordsAsync later
+                        }
+
+                        bool isBackspaceWithVisibleWindow = cmdId == VSConstants.VSStd2KCmdID.BACKSPACE && isWindowVisible;
+
+                        if (isTypeCharTrigger || isBackspaceWithVisibleWindow)
+                        {
+                            bool showedCustomUI = TriggerCompletion();
+                            if (showedCustomUI)
+                            {
+                                Guid vsStd2KGroup = VSConstants.VSStd2K;
+                                _nextCommandTarget.Exec(ref vsStd2KGroup, (uint)VSConstants.VSStd2KCmdID.CANCEL, 0, IntPtr.Zero, IntPtr.Zero);
+                            }
                         }
                         else
                         {
-                            _completionWindow.Hide();
-                            // Fall through and let Visual Studio type the return/tab natively!
+                            _completionWindow?.Hide();
+                        }
+                    }
+
+                    if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
+                    {
+                        if (typedChar == ' ' || typedChar == '\t' || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
+                        {
+                            _ = FormatKeywordsAsync();
+                            ResetAnalysisTimer();
                         }
                     }
                 }
 
-                // 2. Handle Ctrl+Space and native triggers
-                if (cmdId == VSConstants.VSStd2KCmdID.COMPLETEWORD || 
-                    cmdId == VSConstants.VSStd2KCmdID.AUTOCOMPLETE || 
-                    cmdId == VSConstants.VSStd2KCmdID.SHOWMEMBERLIST)
-                {
-                    TriggerCompletion();
-                    return VSConstants.S_OK; // Swallow native box completely
-                }
-
-                if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR)
-                {
-                    typedChar = (char)(ushort)Marshal.GetObjectForNativeVariant(pvaIn);
-                    if (typedChar == ' ' || typedChar == '\t')
-                    {
-                        if (TryExpandSnippet()) return VSConstants.S_OK; // Swallow space/tab if expanded
-                    }
-                }
-                else if (cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB || cmdId == VSConstants.VSStd2KCmdID.BACKTAB)
-                {
-                    if (TryExpandSnippet()) return VSConstants.S_OK; // Swallow if expanded
-                    if (cmdId == VSConstants.VSStd2KCmdID.TAB && TryExpandWildcard()) return VSConstants.S_OK;
-                }
+                return hresult;
             }
-
-            // Let the character be typed natively into the editor
-            int hresult = _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
-
-            // Post-typing logic
-            if (hresult == VSConstants.S_OK && pguidCmdGroup == VSConstants.VSStd2K)
+            catch (Exception ex)
             {
-                var cmdId = (VSConstants.VSStd2KCmdID)nCmdID;
-                
-                // Handle Auto-Complete popup updates
-                if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.BACKSPACE)
+                OutputWindowLogger.LogError($"Exec filter crash on Cmd: {nCmdID} - {ex.Message}", ex);
+                if (!didExecuteNatively)
                 {
-                    bool isWindowVisible = _completionWindow != null && _completionWindow.IsVisible;
-                    bool isTypeCharTrigger = cmdId == VSConstants.VSStd2KCmdID.TYPECHAR && (char.IsLetterOrDigit(typedChar) || typedChar == '@' || typedChar == ' ' || typedChar == ',' || typedChar == '.');
-                    bool isBackspaceWithVisibleWindow = cmdId == VSConstants.VSStd2KCmdID.BACKSPACE && isWindowVisible;
-
-                    if (isTypeCharTrigger || isBackspaceWithVisibleWindow)
-                    {
-                        TriggerCompletion();
-                    }
-                    else
-                    {
-                        _completionWindow?.Hide();
-                    }
+                    // Fallback securely so the user doesn't lose keystrokes (like Backspace / Left Arrow)
+                    return _nextCommandTarget.Exec(ref pguidCmdGroup, nCmdID, nCmdexecopt, pvaIn, pvaOut);
                 }
-
-                // Trigger async keyword casing and research analysis timer
-                if (cmdId == VSConstants.VSStd2KCmdID.TYPECHAR || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
-                {
-                    if (typedChar == ' ' || typedChar == '\t' || cmdId == VSConstants.VSStd2KCmdID.RETURN || cmdId == VSConstants.VSStd2KCmdID.TAB)
-                    {
-                        _ = FormatKeywordsAsync();
-                        ResetAnalysisTimer();
-                    }
-                }
+                return hresult;
             }
-
-            return hresult;
         }
 
-        private void TriggerCompletion()
+        private bool TriggerCompletion()
         {
             ThreadHelper.ThrowIfNotOnUIThread();
             try
@@ -166,34 +196,102 @@ namespace SQLsense
                 string fullText = _textView.TextBuffer.CurrentSnapshot.GetText();
                 string textBeforeCaret = fullText.Substring(0, caretPosition.Position);
                 
-                int lastSpaceIndex = textBeforeCaret.LastIndexOfAny(new char[] { ' ', '\t', '\n', '\r', '(', ')', ',', '=', '<', '>', '+' });
-                string currentWord = lastSpaceIndex == -1 ? textBeforeCaret : textBeforeCaret.Substring(lastSpaceIndex + 1);
-
-                // Trigger background schema refresh implicitly on typing
-                SQLsense.Core.Completion.DatabaseSchemaProvider.TriggerRefreshInBackground();
-
-                if (string.IsNullOrWhiteSpace(currentWord))
+                // Find the active text being typed by looking back from caret to the first non-valid identifier char
+                int wordStart = caretPosition.Position - 1;
+                while (wordStart >= 0)
                 {
-                    string textTrimmed = textBeforeCaret.TrimEnd();
-                    if (string.IsNullOrEmpty(textTrimmed)) 
+                    char c = fullText[wordStart];
+                    if (!char.IsLetterOrDigit(c) && c != '_' && c != '@' && c != '#' && c != '.')
                     {
-                        _completionWindow?.Hide();
-                        return;
+                        break;
+                    }
+                    wordStart--;
+                }
+                
+                string currentWord = fullText.Substring(wordStart + 1, caretPosition.Position - (wordStart + 1));
+
+                // 1) Literal or Comment Safety Check
+                bool inString = false;
+                bool inLineComment = false;
+                bool inBlockComment = false;
+
+                for (int i = 0; i < textBeforeCaret.Length; i++)
+                {
+                    char c = textBeforeCaret[i];
+                    char nextC = i + 1 < textBeforeCaret.Length ? textBeforeCaret[i + 1] : '\0';
+
+                    if (!inString && !inLineComment && !inBlockComment)
+                    {
+                        if (c == '\'') inString = true;
+                        else if (c == '-' && nextC == '-') { inLineComment = true; i++; }
+                        else if (c == '/' && nextC == '*') { inBlockComment = true; i++; }
+                    }
+                    else if (inString)
+                    {
+                        if (c == '\'')
+                        {
+                            if (nextC == '\'') i++; // escaped quote
+                            else inString = false;
+                        }
+                    }
+                    else if (inLineComment)
+                    {
+                        if (c == '\n') inLineComment = false;
+                    }
+                    else if (inBlockComment)
+                    {
+                        if (c == '*' && nextC == '/') { inBlockComment = false; i++; }
+                    }
+                }
+
+                if (inString || inLineComment || inBlockComment)
+                {
+                    _completionWindow?.Hide();
+                    return false;
+                }
+
+                // 2) Pure Number Check (Don't trigger UI on literals like '123' or '1.5')
+                if (!string.IsNullOrWhiteSpace(currentWord))
+                {
+                    bool isAllDigits = true;
+                    int dotCount = 0;
+                    foreach(var ch in currentWord)
+                    {
+                        if (ch == '.') dotCount++;
+                        else if (!char.IsDigit(ch)) { isAllDigits = false; break; }
                     }
                     
-                    char lastChar = textTrimmed[textTrimmed.Length - 1];
-                    bool isOperatorOrComma = lastChar == ',' || lastChar == '=' || lastChar == '<' || lastChar == '>' || lastChar == '+' || lastChar == '-' || lastChar == '*' || lastChar == '/' || lastChar == '(' || lastChar == '.';
-                    
-                    int prevSpace = textTrimmed.LastIndexOfAny(new char[] { ' ', '\t', '\n', '\r', '(', ')', ',', '=', '<', '>', '+' });
-                    string prevWord = prevSpace == -1 ? textTrimmed : textTrimmed.Substring(prevSpace + 1);
-                    prevWord = prevWord.ToUpperInvariant();
-                    
-                    bool isKeyword = prevWord == "SELECT" || prevWord == "FROM" || prevWord == "JOIN" || prevWord == "WHERE" || prevWord == "SET" || prevWord == "ON" || prevWord == "UPDATE" || prevWord == "INTO" || prevWord == "AND" || prevWord == "OR" || prevWord == "BY" || prevWord == "HAVING" || prevWord == "EXEC" || prevWord == "EXECUTE";
-                    
-                    if (!isOperatorOrComma && !isKeyword)
+                    if (isAllDigits && dotCount <= 1)
                     {
                         _completionWindow?.Hide();
-                        return;
+                        return false;
+                    }
+                }
+
+                // Trigger background schema refresh implicitly on typing
+                _ = SQLsense.Core.Completion.DatabaseSchemaProvider.TriggerRefreshInBackgroundAsync();
+
+                // If they haven't typed a word yet (e.g., just hit space), we should ONLY show the window 
+                // if the AST explicitly commands a structured injection (like expecting SET or Columns)
+                if (string.IsNullOrWhiteSpace(currentWord))
+                {
+                    SqlContextState astState = ContextStateAnalyzer.DetermineState(fullText, caretPosition.Position);
+                    
+                    bool astDemandsUI = astState == SqlContextState.UpdateSetColumns || 
+                                        astState == SqlContextState.SelectColumns || 
+                                        astState == SqlContextState.JoinOnCondition ||
+                                        astState == SqlContextState.WhereCondition ||
+                                        astState == SqlContextState.GroupByColumns ||
+                                        astState == SqlContextState.OrderByColumns ||
+                                        astState == SqlContextState.UpdateTable ||
+                                        astState == SqlContextState.InsertTable ||
+                                        astState == SqlContextState.FromTables ||
+                                        astState == SqlContextState.JoinTables;
+
+                    if (!astDemandsUI)
+                    {
+                        _completionWindow?.Hide();
+                        return false;
                     }
                 }
 
@@ -202,7 +300,7 @@ namespace SQLsense
                 if (items.Count == 0)
                 {
                     _completionWindow?.Hide();
-                    return;
+                    return false;
                 }
 
                 if (_completionWindow == null)
@@ -220,10 +318,15 @@ namespace SQLsense
                 _completionWindow.SetItems(items, hasStrictPrefixMatch);
 
                 // Calculate screen position natively via VS Text View
-                var textViewBounds = _textView.TextViewLines.GetCharacterBounds(caretPosition);
+                var textViewLine = _textView.TextViewLines.GetTextViewLineContainingBufferPosition(caretPosition);
+                var bounds = textViewLine.GetCharacterBounds(caretPosition);
                 
-                // PointToScreen handles multi-monitor scaling nicely
-                var screenTopLeft = _textView.VisualElement.PointToScreen(new System.Windows.Point(textViewBounds.Left, textViewBounds.Bottom));
+                // Subtract the viewport scroll offsets to get the exact relative X/Y pixel within the VisualElement window
+                double viewX = bounds.Left - _textView.ViewportLeft;
+                double viewY = bounds.Bottom - _textView.ViewportTop;
+                
+                // Translate the logical view pixels to absolute monitor screen pixels
+                var screenTopLeft = _textView.VisualElement.PointToScreen(new System.Windows.Point(viewX, viewY));
                 
                 _completionWindow.Left = screenTopLeft.X;
                 _completionWindow.Top = screenTopLeft.Y;
@@ -232,10 +335,12 @@ namespace SQLsense
                 {
                     _completionWindow.Show();
                 }
+                return true;
             }
             catch (Exception ex)
             {
                 OutputWindowLogger.LogError("Failed to show custom completion window", ex);
+                return false;
             }
         }
 
@@ -282,10 +387,15 @@ namespace SQLsense
                     expansion = item.SnippetExpansion;
                 }
                 // If it's a normal Database Object, insert the full description (schema.name) which was stored there
+                // EXCEPT if it's an alias ("Projected Alias", "Alias for "), in which case we just want the alias name (item.Text).
                 else if ((item.IconType == UI.Completion.CompletionIconType.Table || 
                           item.IconType == UI.Completion.CompletionIconType.View || 
                           item.IconType == UI.Completion.CompletionIconType.Function ||
-                          item.IconType == UI.Completion.CompletionIconType.StoredProcedure) && !string.IsNullOrEmpty(item.Description) && item.Description != "Built-in Function" && !item.Description.StartsWith("Alias for "))
+                          item.IconType == UI.Completion.CompletionIconType.StoredProcedure) && 
+                          !string.IsNullOrEmpty(item.Description) && 
+                          item.Description != "Built-in Function" && 
+                          !item.Description.StartsWith("Alias for ") &&
+                          !item.Description.StartsWith("Projected Alias"))
                 {
                     expansion = item.Description;
                 }

@@ -23,20 +23,12 @@ namespace SQLsense.Infrastructure
 
         public static void Log(string message)
         {
-            ThreadHelper.JoinableTaskFactory.Run(async () =>
-            {
-                await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-                _pane?.OutputStringThreadSafe($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
-            });
+            System.Diagnostics.Debug.WriteLine($"[SQLsense Log] {message}");
         }
 
         public static void LogError(string message, Exception ex)
         {
-            Log($"ERROR: {message}. Exception: {ex.Message}");
-            if (ex.StackTrace != null)
-            {
-                Log($"Stack Trace: {ex.StackTrace}");
-            }
+            System.Diagnostics.Debug.WriteLine($"[SQLsense ERROR] {message}. Exception: {ex.Message}");
         }
     }
 }

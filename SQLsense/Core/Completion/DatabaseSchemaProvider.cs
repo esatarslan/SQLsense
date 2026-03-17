@@ -15,11 +15,26 @@ namespace SQLsense.Core.Completion
         private static List<CompletionItem> _cachedObjects = new List<CompletionItem>();
         private static DateTime _lastRefresh = DateTime.MinValue;
         private static bool _isFetching = false;
+        private static bool _isMockMode = false;
 
-        public static string GetActiveConnectionString()
+        public static void SetMockObjects(List<CompletionItem> mockObjects)
+        {
+            _cachedObjects = mockObjects;
+            _isMockMode = true;
+        }
+
+        public static void SetMockColumns(List<CompletionItem> mockColumns)
+        {
+            _cachedColumns = mockColumns;
+            _isMockMode = true;
+        }
+
+        public static async Task<string> GetActiveConnectionStringAsync()
         {
             try
             {
+                await Microsoft.VisualStudio.Shell.ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
+
                 var dte = Microsoft.VisualStudio.Shell.ServiceProvider.GlobalProvider.GetService(typeof(EnvDTE.DTE)) as EnvDTE80.DTE2;
                 if (dte?.ActiveDocument?.ActiveWindow?.Object == null) return null;
 
@@ -88,21 +103,22 @@ namespace SQLsense.Core.Completion
 
         public static List<CompletionItem> GetCachedObjects()
         {
-            TriggerRefreshInBackground();
+            _ = TriggerRefreshInBackgroundAsync(); // Fire and forget with discard
             return _cachedObjects;
         }
 
         public static List<CompletionItem> GetCachedColumns()
         {
-            TriggerRefreshInBackground();
+            _ = TriggerRefreshInBackgroundAsync(); // Fire and forget with discard
             return _cachedColumns;
         }
 
-        public static void TriggerRefreshInBackground()
+        public static async Task TriggerRefreshInBackgroundAsync()
         {
+            if (_isMockMode) return;
             if (_isFetching) return;
 
-            string connStr = GetActiveConnectionString();
+            string connStr = await GetActiveConnectionStringAsync();
             if (string.IsNullOrEmpty(connStr)) return;
 
             if (_lastConnStr == connStr && (DateTime.Now - _lastRefresh).TotalSeconds < 60)
@@ -111,7 +127,7 @@ namespace SQLsense.Core.Completion
             }
 
             _isFetching = true;
-            Task.Run(() => 
+            _ = Task.Run(() => 
             {
                 try
                 {
