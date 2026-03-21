@@ -173,6 +173,21 @@ namespace SQLsense
                     }
                 }
 
+                // Post-paste trigger: detect Paste and trigger IntelliSense for ALTER context
+                if (hresult == VSConstants.S_OK && pguidCmdGroup == VSConstants.GUID_VSStandardCommandSet97)
+                {
+                    uint pasteId = (uint)VSConstants.VSStd97CmdID.Paste;
+                    if (nCmdID == pasteId)
+                    {
+                        bool showedCustomUI = TriggerCompletion();
+                        if (showedCustomUI)
+                        {
+                            Guid vsStd2KGroup = VSConstants.VSStd2K;
+                            _nextCommandTarget.Exec(ref vsStd2KGroup, (uint)VSConstants.VSStd2KCmdID.CANCEL, 0, IntPtr.Zero, IntPtr.Zero);
+                        }
+                    }
+                }
+
                 return hresult;
             }
             catch (Exception ex)
@@ -286,7 +301,11 @@ namespace SQLsense
                                         astState == SqlContextState.UpdateTable ||
                                         astState == SqlContextState.InsertTable ||
                                         astState == SqlContextState.FromTables ||
-                                        astState == SqlContextState.JoinTables;
+                                        astState == SqlContextState.JoinTables ||
+                                        astState == SqlContextState.ExecProcedure ||
+                                        astState == SqlContextState.AlterProcedure ||
+                                        astState == SqlContextState.AlterView ||
+                                        astState == SqlContextState.AlterFunction;
 
                     if (!astDemandsUI)
                     {
@@ -316,6 +335,12 @@ namespace SQLsense
                                             items[0].Text.StartsWith(currentWord, StringComparison.OrdinalIgnoreCase);
                                             
                 _completionWindow.SetItems(items, hasStrictPrefixMatch);
+
+                // Auto-select exact match (e.g., after paste in ALTER context)
+                if (!string.IsNullOrEmpty(currentWord))
+                {
+                    _completionWindow.SelectExactMatch(currentWord);
+                }
 
                 // Calculate screen position natively via VS Text View
                 var textViewLine = _textView.TextViewLines.GetTextViewLineContainingBufferPosition(caretPosition);
@@ -375,6 +400,25 @@ namespace SQLsense
                 if (item.IconType == UI.Completion.CompletionIconType.Snippet && _snippetManager.TryGetSnippet(item.Text, out string fullSnippet))
                 {
                     expansion = fullSnippet;
+                }
+                // ALTER context: item has full object definition in SnippetExpansion, replace from ALTER keyword start
+                else if (!string.IsNullOrEmpty(item.SnippetExpansion) &&
+                         (prevWord == "PROC" || prevWord == "PROCEDURE" || prevWord == "VIEW" || prevWord == "FUNCTION"))
+                {
+                    // Verify this is an ALTER statement by scanning backwards for ALTER keyword
+                    string fullLineText = textBeforeCaret.TrimEnd();
+                    int alterIdx = fullLineText.LastIndexOf("ALTER", StringComparison.OrdinalIgnoreCase);
+                    if (alterIdx >= 0)
+                    {
+                        // Replace from ALTER start position to caret
+                        wordStart = line.Start.Position + alterIdx;
+                        currentWordLength = caretPosition.Position - wordStart;
+                        expansion = item.SnippetExpansion;
+                    }
+                    else
+                    {
+                        expansion = item.SnippetExpansion;
+                    }
                 }
                 // If it's a Database Object requested after an execution context, insert the full expanded parameter/column scaffolding
                 else if ((item.IconType == UI.Completion.CompletionIconType.Table || 

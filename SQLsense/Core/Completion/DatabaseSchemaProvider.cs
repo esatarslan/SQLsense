@@ -173,21 +173,7 @@ namespace SQLsense.Core.Completion
                                     CompletionIconType icon = CompletionIconType.Keyword;
                                     string snippetExpansion = null;
 
-                                    if (typeDesc.Contains("TABLE")) 
-                                    {
-                                        icon = CompletionIconType.Table;
-                                        if (!string.IsNullOrEmpty(tblColumns))
-                                        {
-                                            var cols = tblColumns.Split(',');
-                                            var valuesText = string.Join(", ", cols.Select(c => " "));
-                                            snippetExpansion = $"{schema}.[{name}] ({tblColumns}) VALUES ({valuesText})";
-                                        }
-                                    }
-                                    else if (typeDesc.Contains("VIEW")) 
-                                    {
-                                        icon = CompletionIconType.View;
-                                    }
-                                    else if (typeDesc.Contains("PROCEDURE")) 
+                                    if (typeDesc.Contains("PROCEDURE")) 
                                     {
                                         icon = CompletionIconType.StoredProcedure;
                                         if (!string.IsNullOrEmpty(parameters))
@@ -203,6 +189,7 @@ namespace SQLsense.Core.Completion
                                     }
                                     else if (typeDesc.Contains("FUNCTION")) 
                                     {
+                                        // Must be checked BEFORE "TABLE" — SQL_TABLE_VALUED_FUNCTION contains both
                                         icon = CompletionIconType.Function;
                                         if (!string.IsNullOrEmpty(parameters))
                                         {
@@ -211,6 +198,20 @@ namespace SQLsense.Core.Completion
                                         else
                                         {
                                             snippetExpansion = $"{schema}.{name}()";
+                                        }
+                                    }
+                                    else if (typeDesc.Contains("VIEW")) 
+                                    {
+                                        icon = CompletionIconType.View;
+                                    }
+                                    else if (typeDesc.Contains("TABLE")) 
+                                    {
+                                        icon = CompletionIconType.Table;
+                                        if (!string.IsNullOrEmpty(tblColumns))
+                                        {
+                                            var cols = tblColumns.Split(',');
+                                            var valuesText = string.Join(", ", cols.Select(c => " "));
+                                            snippetExpansion = $"{schema}.[{name}] ({tblColumns}) VALUES ({valuesText})";
                                         }
                                     }
 
@@ -259,6 +260,49 @@ namespace SQLsense.Core.Completion
                     _isFetching = false;
                 }
             });
+        }
+        /// <summary>
+        /// Fetches the definition of a database object (SP, View, Function) and replaces CREATE with ALTER.
+        /// Returns the raw definition as stored in the database, without any formatting.
+        /// </summary>
+        public static string GetObjectDefinition(string schemaName, string objectName)
+        {
+            if (_isMockMode || string.IsNullOrEmpty(_lastConnStr)) return null;
+
+            try
+            {
+                using (var conn = new SqlConnection(_lastConnStr))
+                {
+                    conn.Open();
+                    string fullName = $"{schemaName}.{objectName}";
+                    using (var cmd = new SqlCommand("SELECT OBJECT_DEFINITION(OBJECT_ID(@fullName))", conn))
+                    {
+                        cmd.Parameters.AddWithValue("@fullName", fullName);
+                        cmd.CommandTimeout = 5;
+                        var result = cmd.ExecuteScalar();
+                        if (result == null || result == DBNull.Value) return null;
+
+                        string definition = result.ToString();
+
+                        // Replace CREATE with ALTER (case-insensitive, first occurrence only)
+                        int createIdx = definition.IndexOf("CREATE", StringComparison.OrdinalIgnoreCase);
+                        if (createIdx >= 0)
+                        {
+                            definition = definition.Substring(0, createIdx) + "ALTER" + definition.Substring(createIdx + 6);
+                        }
+
+                        // Remove any leading whitespace/newlines to prevent blank lines
+                        definition = definition.TrimStart();
+
+                        return definition;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                OutputWindowLogger.LogError("Failed to fetch object definition", ex);
+                return null;
+            }
         }
     }
 }
