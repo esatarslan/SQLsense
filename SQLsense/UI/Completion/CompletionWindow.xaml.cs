@@ -53,6 +53,25 @@ namespace SQLsense.UI.Completion
             }
         }
 
+        /// <summary>
+        /// If an item's Text exactly matches the given name (case-insensitive), auto-select it.
+        /// </summary>
+        public void SelectExactMatch(string name)
+        {
+            if (string.IsNullOrEmpty(name) || CompletionList.Items.Count == 0) return;
+
+            for (int i = 0; i < CompletionList.Items.Count; i++)
+            {
+                if (CompletionList.Items[i] is CompletionItem item &&
+                    item.Text.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    CompletionList.SelectedIndex = i;
+                    CompletionList.ScrollIntoView(item);
+                    return;
+                }
+            }
+        }
+
         public bool HasSelection => CompletionList.SelectedIndex != -1;
 
         public void MoveUp()

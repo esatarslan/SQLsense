@@ -36,6 +36,8 @@ namespace SQLsense.Core.Completion
 
             bool prioritizeTables = false;
             bool prioritizeColumns = false;
+            bool prioritizeSPs = false;
+            bool isAlterContext = false;
             HashSet<string> mentionedTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var tableAliases = new Dictionary<string, SQLsense.Core.Analysis.AliasDefinition>(StringComparer.OrdinalIgnoreCase);
 
@@ -176,6 +178,51 @@ namespace SQLsense.Core.Completion
                     
                     // Allow columns to be visible below SET in case the user skips typing SET or is investigating columns
                     prioritizeColumns = true;
+                }
+                else if (state == SqlContextState.ExecProcedure)
+                {
+                    // After EXEC/EXECUTE: only show Stored Procedures
+                    allowSnippets = false;
+                    allowTables = false;
+                    allowViews = false;
+                    allowColumns = false;
+                    allowKeywords = false;
+                    allowFunctions = false;
+                    prioritizeSPs = true;
+                }
+                else if (state == SqlContextState.AlterProcedure)
+                {
+                    allowSnippets = false;
+                    allowTables = false;
+                    allowViews = false;
+                    allowColumns = false;
+                    allowKeywords = false;
+                    allowFunctions = false;
+                    // allowSPs stays true
+                    prioritizeSPs = true;
+                    isAlterContext = true;
+                }
+                else if (state == SqlContextState.AlterView)
+                {
+                    allowSnippets = false;
+                    allowTables = false;
+                    allowSPs = false;
+                    allowColumns = false;
+                    allowKeywords = false;
+                    allowFunctions = false;
+                    // allowViews stays true
+                    isAlterContext = true;
+                }
+                else if (state == SqlContextState.AlterFunction)
+                {
+                    allowSnippets = false;
+                    allowTables = false;
+                    allowViews = false;
+                    allowSPs = false;
+                    allowColumns = false;
+                    allowKeywords = false;
+                    // allowFunctions stays true
+                    isAlterContext = true;
                 }
             }
             // Extract mentioned tables from the actively localized query text (rather than the full global file text)
@@ -324,6 +371,23 @@ namespace SQLsense.Core.Completion
                 if (!allowViews && obj.IconType == SQLsense.UI.Completion.CompletionIconType.View) continue;
                 if (!allowSPs && obj.IconType == SQLsense.UI.Completion.CompletionIconType.StoredProcedure) continue;
                 if (!allowFunctions && obj.IconType == SQLsense.UI.Completion.CompletionIconType.Function) continue;
+
+                // In ALTER context, override SnippetExpansion with the full object definition
+                if (isAlterContext && !string.IsNullOrEmpty(obj.Description))
+                {
+                    // Description holds "schema.name" — split to get schema and name
+                    string[] parts = obj.Description.Split('.');
+                    if (parts.Length >= 2)
+                    {
+                        string schemaName = parts[0];
+                        string objName = parts[parts.Length - 1];
+                        string definition = DatabaseSchemaProvider.GetObjectDefinition(schemaName, objName);
+                        if (!string.IsNullOrEmpty(definition))
+                        {
+                            obj.SnippetExpansion = definition;
+                        }
+                    }
+                }
 
                 AddItem(obj, obj.Text);
             }
@@ -574,6 +638,11 @@ namespace SQLsense.Core.Completion
                     if (x.IconType == SQLsense.UI.Completion.CompletionIconType.Keyword) return 6;
                     
                     return 10;
+                })
+                .ThenBy(x => {
+                    // Sub-sort for SP priority in EXEC context
+                    if (prioritizeSPs && x.IconType == SQLsense.UI.Completion.CompletionIconType.StoredProcedure) return 0;
+                    return 1;
                 })
                 .ThenBy(x => x.Text)
                 .ToList();

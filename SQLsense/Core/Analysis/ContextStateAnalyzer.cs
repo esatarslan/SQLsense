@@ -16,7 +16,11 @@ namespace SQLsense.Core.Analysis
         UpdateSetColumns,
         InsertTable,
         GroupByColumns,
-        OrderByColumns
+        OrderByColumns,
+        ExecProcedure,
+        AlterProcedure,
+        AlterView,
+        AlterFunction
     }
 
     /// <summary>
@@ -121,8 +125,24 @@ namespace SQLsense.Core.Analysis
                             }
                             
                             if (text == "INSERT") return SqlContextState.InsertTable;
-                            if (text == "GROUP") return SqlContextState.GroupByColumns; // Simplification
+                            if (text == "GROUP") return SqlContextState.GroupByColumns;
                             if (text == "ORDER") return SqlContextState.OrderByColumns;
+                            if (text == "EXEC" || text == "EXECUTE") return SqlContextState.ExecProcedure;
+
+                            if (text == "ALTER")
+                            {
+                                // Look forward from ALTER to find the object type keyword
+                                for (int j = i + 1; j < tokens.Count; j++)
+                                {
+                                    var nextToken = tokens[j];
+                                    if (nextToken.TokenType == TSqlTokenType.WhiteSpace) continue;
+                                    string nextText = nextToken.Text.ToUpperInvariant();
+                                    if (nextText == "PROC" || nextText == "PROCEDURE") return SqlContextState.AlterProcedure;
+                                    if (nextText == "VIEW") return SqlContextState.AlterView;
+                                    if (nextText == "FUNCTION") return SqlContextState.AlterFunction;
+                                    break; // Unknown ALTER target
+                                }
+                            }
 
                             // Non-structural tokens (identifiers, dots, operators, literals, parens, etc.)
                             // Skip these and continue searching backwards for the nearest structural keyword.
