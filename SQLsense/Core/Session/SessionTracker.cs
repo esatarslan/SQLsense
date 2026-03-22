@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
@@ -112,18 +113,152 @@ namespace SQLsense.Core.Session
                 return;
             }
 
+            // Capture connection info (no password stored)
+            string serverName = null, databaseName = null, userName = null;
+            int authType = 0;
+            try
+            {
+                dynamic connInfo = GetUIConnectionInfoDynamic(pbstrMkDocument);
+                if (connInfo != null)
+                {
+                    serverName   = connInfo.ServerName as string;
+                    databaseName = connInfo.AdvancedOptions?["Database"] as string;
+                    authType     = (int)connInfo.AuthenticationType;
+                    userName     = authType == 0 ? null : connInfo.UserName as string;
+                }
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.OutputWindowLogger.Log($"Could not capture connection info: {ex.Message}");
+            }
+
             _sessionManager.SaveSession(new SessionEntry
             {
-                Id = pbstrMkDocument,
-                FilePath = pbstrMkDocument,
-                Content = text,
-                LastUpdated = DateTime.Now
+                Id           = pbstrMkDocument,
+                FilePath     = pbstrMkDocument,
+                Content      = text,
+                LastUpdated  = DateTime.Now,
+                ServerName   = serverName,
+                DatabaseName = databaseName,
+                AuthType     = authType,
+                UserName     = userName
             });
         }
+
+        private dynamic GetUIConnectionInfoDynamic(string moniker)
+        {
+            try
+            {
+                Infrastructure.OutputWindowLogger.Log($"[DynamicConn] Starting for moniker: '{moniker}'");
+                var asm = EnsureSqlWorkbenchInterfacesLoaded();
+                if (asm == null) 
+                {
+                    Infrastructure.OutputWindowLogger.Log("[DynamicConn] ERROR: SqlWorkbench.Interfaces assembly not found.");
+                    return null;
+                }
+                Infrastructure.OutputWindowLogger.Log("[DynamicConn] Assembly loaded.");
+
+                // 1. Try ISqlEditorService 
+                var sqlEditorInterface = asm.GetTypes().FirstOrDefault(t => t.Name == "ISqlEditorService");
+                var sqlEditorServiceType = asm.GetTypes().FirstOrDefault(t => t.Name == "SSqlEditorService" || t.Name == "ISqlEditorService");
+                
+                Infrastructure.OutputWindowLogger.Log($"[DynamicConn] ISqlEditorInterface: {(sqlEditorInterface != null ? "Found" : "Null")}");
+                
+                if (sqlEditorInterface != null && sqlEditorServiceType != null && !string.IsNullOrEmpty(moniker))
+                {
+                    var svc = Microsoft.VisualStudio.Shell.Package.GetGlobalService(sqlEditorServiceType);
+                    Infrastructure.OutputWindowLogger.Log($"[DynamicConn] ISqlEditorService service: {(svc != null ? "Found" : "Null")}");
+                    
+                    if (svc != null)
+                    {
+                        var method = sqlEditorInterface.GetMethod("GetUIConnectionInfoForSpecificQueryEditor");
+                        Infrastructure.OutputWindowLogger.Log($"[DynamicConn] Method GetUIConnectionInfoForSpecificQueryEditor: {(method != null ? "Found" : "Null")}");
+                        
+                        if (method != null)
+                        {
+                            var result = method.Invoke(svc, new object[] { moniker });
+                            Infrastructure.OutputWindowLogger.Log($"[DynamicConn] ISqlEditorService result: {(result != null ? "Success" : "Null")}");
+                            if (result != null) return result; // this returns UIConnectionInfo directly
+                        }
+                    }
+                }
+
+                // 2. Fallback to IScriptFactory
+                Infrastructure.OutputWindowLogger.Log("[DynamicConn] Fallback to IScriptFactory.CurrentlyActiveWndConnectionInfo");
+                var factoryType = asm.GetTypes().FirstOrDefault(t => t.Name == "IScriptFactory");
+                Infrastructure.OutputWindowLogger.Log($"[DynamicConn] IScriptFactory type: {(factoryType != null ? "Found" : "Null")}");
+                
+                if (factoryType != null)
+                {
+                    var factory = Microsoft.VisualStudio.Shell.Package.GetGlobalService(factoryType);
+                    Infrastructure.OutputWindowLogger.Log($"[DynamicConn] IScriptFactory service: {(factory != null ? "Found" : "Null")}");
+                    
+                    if (factory != null)
+                    {
+                        var prop = factoryType.GetProperty("CurrentlyActiveWndConnectionInfo");
+                        Infrastructure.OutputWindowLogger.Log($"[DynamicConn] Property CurrentlyActiveWndConnectionInfo: {(prop != null ? "Found" : "Null")}");
+                        
+                        var wrapper = prop?.GetValue(factory, null);
+                        Infrastructure.OutputWindowLogger.Log($"[DynamicConn] IScriptFactory wrapper: {(wrapper != null ? wrapper.GetType().Name : "Null")}");
+                        
+                        if (wrapper != null)
+                        {
+                            var uiConnProp = wrapper.GetType().GetProperty("UIConnectionInfo");
+                            var finalResult = uiConnProp?.GetValue(wrapper, null);
+                            Infrastructure.OutputWindowLogger.Log($"[DynamicConn] IScriptFactory final unwrapped: {(finalResult != null ? "Success" : "Null")}");
+                            return finalResult;
+                        }
+                    }
+                }
+                
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.OutputWindowLogger.Log($"[DynamicConn] Exception: {ex.Message} \n {ex.StackTrace}");
+                return null;
+            }
+        }
+
+        private System.Reflection.Assembly EnsureSqlWorkbenchInterfacesLoaded()
+        {
+            const string asmName = "SqlWorkbench.Interfaces";
+            var existing = System.AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(a => a.GetName().Name == asmName);
+            if (existing != null) return existing;
+
+            try
+            {
+                string idePath = @"C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE";
+                string dllPath = System.IO.Path.Combine(idePath, "SqlWorkbench.Interfaces.dll");
+                if (System.IO.File.Exists(dllPath))
+                {
+                    return System.Reflection.Assembly.LoadFrom(dllPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.OutputWindowLogger.Log($"Could not load SqlWorkbench.Interfaces tracking: {ex.Message}");
+            }
+            return null;
+        }
+
+        private bool _shutdownSyncPerformed = false;
 
         public void SyncAllDocuments()
         {
             ThreadHelper.ThrowIfNotOnUIThread();
+            
+            if (IsShuttingDown())
+            {
+                if (_shutdownSyncPerformed)
+                {
+                    Infrastructure.OutputWindowLogger.Log("Shutdown sync already performed. Skipping to prevent wiping out the database.");
+                    return;
+                }
+                _shutdownSyncPerformed = true;
+            }
+
             Infrastructure.OutputWindowLogger.Log("Syncing all open documents using RDT iteration...");
             
             if (SQLsensePackage.Settings?.EnableSessionRecovery != true) return;

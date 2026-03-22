@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.VisualStudio;
@@ -27,6 +28,7 @@ namespace SQLsense
         
         private SessionManager _sessionManager;
         private SessionTracker _sessionTracker;
+        private EnvDTE.DTEEvents _dteEvents;
 
         protected override int QueryClose(out bool canClose)
         {
@@ -38,6 +40,17 @@ namespace SQLsense
                 _sessionTracker.SyncAllDocuments();
             }
             return base.QueryClose(out canClose);
+        }
+
+        private void DTEEvents_OnBeginShutdown()
+        {
+            ThreadHelper.ThrowIfNotOnUIThread();
+            IsShuttingDown = true;
+            if (_sessionTracker != null)
+            {
+                Infrastructure.OutputWindowLogger.Log("DTE OnBeginShutdown triggered. Syncing sessions before IDE closes...");
+                _sessionTracker.SyncAllDocuments();
+            }
         }
 
         protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
@@ -60,6 +73,14 @@ namespace SQLsense
                     _sessionManager = new SessionManager();
                     _sessionTracker = new SessionTracker(this, _sessionManager);
                     await _sessionTracker.InitializeAsync();
+
+                    var dte = await GetServiceAsync(typeof(SDTE)) as DTE2;
+                    if (dte != null)
+                    {
+                        _dteEvents = dte.Events.DTEEvents;
+                        _dteEvents.ModeChanged += (oldMode) => { /* keeping reference alive */ };
+                        _dteEvents.OnBeginShutdown += DTEEvents_OnBeginShutdown;
+                    }
                     
                     // Run restoration with a slight delay to ensure SSMS is ready
                     _ = System.Threading.Tasks.Task.Run(async () => {
@@ -127,7 +148,6 @@ namespace SQLsense
 
         private async System.Threading.Tasks.Task RestoreSessionsAsync()
         {
-            // Switch to main thread for UI operations
             await JoinableTaskFactory.SwitchToMainThreadAsync();
             
             try
@@ -136,66 +156,61 @@ namespace SQLsense
                 Infrastructure.OutputWindowLogger.Log($"Found {sessions.Count} sessions to restore.");
                 if (sessions.Count == 0) return;
 
-                IVsUIShellOpenDocument openDoc = await GetServiceAsync(typeof(SVsUIShellOpenDocument)) as IVsUIShellOpenDocument;
                 DTE2 dte = await GetServiceAsync(typeof(SDTE)) as DTE2;
-                
-                if (openDoc == null || dte == null)
+                IVsUIShellOpenDocument openDoc = await GetServiceAsync(typeof(SVsUIShellOpenDocument)) as IVsUIShellOpenDocument;
+
+                if (dte == null)
                 {
-                    Infrastructure.OutputWindowLogger.Log("Could not get essential services (IVsUIShellOpenDocument or DTE).");
+                    Infrastructure.OutputWindowLogger.Log("Could not get DTE service.");
                     return;
                 }
 
+                // Force-load SqlWorkbench.Interfaces from known SSMS path so reflection works
+                System.Reflection.Assembly sqlWbAsm = EnsureSqlWorkbenchInterfacesLoaded();
+
+                // Detect if SSMS has already restored documents natively (its own session recovery)
+                int existingDocCount = 0;
+                try { existingDocCount = dte.Documents.Count; } catch { }
+                Infrastructure.OutputWindowLogger.Log($"SSMS already has {existingDocCount} open document(s) before our restore.");
+
                 foreach (var session in sessions)
                 {
-                    Infrastructure.OutputWindowLogger.Log($"Processing session: ID={session.Id}, Path='{session.FilePath}'");
-                    
-                    // Delete the old record. If restoration succeeds, the tracker will save it again with fresh session context.
+                    Infrastructure.OutputWindowLogger.Log($"Processing: ID={session.Id}, Server='{session.ServerName}', Docs={existingDocCount}");
                     _sessionManager.DeleteSession(session.Id);
 
+                    // ── Saved file ────────────────────────────────────────────
                     if (!string.IsNullOrEmpty(session.FilePath) && File.Exists(session.FilePath))
                     {
                         Infrastructure.OutputWindowLogger.Log("Restoring disk file session.");
-                        openDoc.OpenDocumentViaProject(session.FilePath, VSConstants.LOGVIEWID_Code, out _, out _, out _, out _);
-                        Infrastructure.OutputWindowLogger.Log("Session restored successfully.");
+                        openDoc?.OpenDocumentViaProject(session.FilePath, VSConstants.LOGVIEWID_Code, out _, out _, out _, out _);
+                        continue;
                     }
-                    else if (!string.IsNullOrEmpty(session.Content))
-                    {
-                        Infrastructure.OutputWindowLogger.Log("Unsaved session detected. Opening new query window...");
-                        
-                        try
-                        {
-                            dte.ExecuteCommand("File.NewQuery");
-                            
-                            // Wait for the new document to become active
-                            EnvDTE.Document activeDoc = null;
-                            for (int i = 0; i < 10; i++)
-                            {
-                                await System.Threading.Tasks.Task.Delay(200);
-                                activeDoc = dte.ActiveDocument;
-                                if (activeDoc != null) break;
-                            }
 
-                            if (activeDoc != null)
-                            {
-                                var textDoc = (EnvDTE.TextDocument)activeDoc.Object("TextDocument");
-                                if (textDoc != null)
-                                {
-                                    var editPoint = textDoc.StartPoint.CreateEditPoint();
-                                    editPoint.Delete(textDoc.EndPoint);
-                                    editPoint.Insert(session.Content);
-                                    Infrastructure.OutputWindowLogger.Log("Unsaved session content injected successfully.");
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Infrastructure.OutputWindowLogger.Log($"Error restoring unsaved session: {ex.Message}");
-                        }
+                    // ── Unsaved content ───────────────────────────────────────
+                    if (string.IsNullOrEmpty(session.Content)) continue;
+
+                    if (existingDocCount > 0)
+                    {
+                        // SSMS already opened windows (either its own restore or user-opened tabs).
+                        // Inject our content into the currently active document instead of opening new.
+                        Infrastructure.OutputWindowLogger.Log("SSMS has open docs — injecting content into active doc.");
+                        await InjectContentIntoActiveDocAsync(dte, session.Content);
                     }
                     else
                     {
-                        Infrastructure.OutputWindowLogger.Log("Session has no path and no content. Skipping.");
+                        // SSMS has no open windows — safe to open via IScriptFactory (no extra Connect dialog)
+                        bool opened = TryOpenViaScriptFactory(sqlWbAsm, session);
+                        if (!opened)
+                        {
+                            // Fallback only when SSMS has no windows — single Connect dialog is expected
+                            Infrastructure.OutputWindowLogger.Log("IScriptFactory unavailable. Using File.NewQuery fallback.");
+                            try { dte.ExecuteCommand("File.NewQuery"); } catch { }
+                        }
+
+                        await InjectContentIntoActiveDocAsync(dte, session.Content);
                     }
+
+                    await System.Threading.Tasks.Task.Delay(300);
                 }
             }
             catch (Exception ex)
@@ -203,6 +218,124 @@ namespace SQLsense
                 Infrastructure.OutputWindowLogger.Log($"RestoreSessions failure: {ex.Message}");
             }
         }
+
+        private System.Reflection.Assembly EnsureSqlWorkbenchInterfacesLoaded()
+        {
+            const string asmName = "SqlWorkbench.Interfaces";
+            var existing = System.AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(a => a.GetName().Name == asmName);
+            if (existing != null) return existing;
+
+            try
+            {
+                // Explicit path — SSMS always installs here
+                string ssmsDir = Path.GetDirectoryName(typeof(SQLsensePackage).Assembly.Location);
+                // Walk up to find SSMS IDE dir
+                string idePath = @"C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE";
+                string dllPath = Path.Combine(idePath, "SqlWorkbench.Interfaces.dll");
+                if (File.Exists(dllPath))
+                {
+                    return System.Reflection.Assembly.LoadFrom(dllPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.OutputWindowLogger.Log($"Could not load SqlWorkbench.Interfaces: {ex.Message}");
+            }
+            return null;
+        }
+
+        private bool TryOpenViaScriptFactory(System.Reflection.Assembly sqlWbAsm, SessionEntry session)
+        {
+            Infrastructure.OutputWindowLogger.Log($"[RestoreConn] Trying to open {session.ServerName} via IScriptFactory");
+            if (sqlWbAsm == null || string.IsNullOrEmpty(session.ServerName)) 
+            {
+                Infrastructure.OutputWindowLogger.Log($"[RestoreConn] Failed: sqlWbAsm is null or ServerName is empty.");
+                return false;
+            }
+            try
+            {
+                var factoryType = sqlWbAsm.GetTypes().FirstOrDefault(t => t.Name == "IScriptFactory");
+                
+                // UIConnectionInfo is in a different assembly! Search all loaded assemblies.
+                var connInfoType = System.AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                    .FirstOrDefault(t => t.Name == "UIConnectionInfo");
+                    
+                var scriptTypeType = System.AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(a => { try { return a.GetTypes(); } catch { return new Type[0]; } })
+                    .FirstOrDefault(t => t.Name == "ScriptType");
+
+                Infrastructure.OutputWindowLogger.Log($"[RestoreConn] factoryType: {factoryType?.Name}, connInfoType: {connInfoType?.Name}, scriptTypeType: {scriptTypeType?.Name}");
+
+                if (factoryType == null || connInfoType == null || scriptTypeType == null) return false;
+
+                var factory = Microsoft.VisualStudio.Shell.Package.GetGlobalService(factoryType);
+                if (factory == null) 
+                {
+                    Infrastructure.OutputWindowLogger.Log($"[RestoreConn] Failed: IScriptFactory global service returned null.");
+                    return false;
+                }
+
+                dynamic connInfo = Activator.CreateInstance(connInfoType);
+                connInfo.ServerName = session.ServerName;
+                connInfo.AuthenticationType = session.AuthType;
+                if (session.AuthType != 0 && !string.IsNullOrEmpty(session.UserName))
+                    connInfo.UserName = session.UserName;
+
+                object scriptTypeSql = Enum.ToObject(scriptTypeType, 0); // 0 = Sql
+                
+                // Because CreateNewBlankScript is overloaded, we search by name and parameter count.
+                var createMethod = factoryType.GetMethods().FirstOrDefault(m => 
+                    m.Name == "CreateNewBlankScript" && 
+                    m.GetParameters().Length == 3 && 
+                    m.GetParameters()[1].ParameterType.Name == "UIConnectionInfo"
+                );
+                
+                if (createMethod == null) 
+                {
+                    Infrastructure.OutputWindowLogger.Log($"[RestoreConn] Failed: createMethod is null (overload not found).");
+                    return false;
+                }
+
+                createMethod.Invoke(factory, new object[] { scriptTypeSql, connInfo, null });
+                Infrastructure.OutputWindowLogger.Log("[RestoreConn] SUCCESS: Opened via IScriptFactory with connection info.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.OutputWindowLogger.Log($"[RestoreConn] EXCEPTION: {ex.Message}\n{ex.StackTrace}");
+                return false;
+            }
+        }
+
+        private async System.Threading.Tasks.Task InjectContentIntoActiveDocAsync(DTE2 dte, string content)
+        {
+            EnvDTE.Document activeDoc = null;
+            for (int i = 0; i < 10; i++)
+            {
+                await System.Threading.Tasks.Task.Delay(200);
+                try { activeDoc = dte.ActiveDocument; } catch { }
+                if (activeDoc != null) break;
+            }
+            if (activeDoc == null) return;
+            try
+            {
+                var textDoc = activeDoc.Object("TextDocument") as EnvDTE.TextDocument;
+                if (textDoc != null)
+                {
+                    var ep = textDoc.StartPoint.CreateEditPoint();
+                    ep.Delete(textDoc.EndPoint);
+                    ep.Insert(content);
+                    Infrastructure.OutputWindowLogger.Log("Content injected successfully.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Infrastructure.OutputWindowLogger.Log($"Content injection failed: {ex.Message}");
+            }
+        }
+
 
         protected override void Dispose(bool disposing)
         {
