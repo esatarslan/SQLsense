@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="17.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
@@ -121,6 +121,10 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Xml" />
     <Reference Include="WindowsBase" />
+    <Reference Include="SqlWorkbench.Interfaces">
+      <HintPath>C:\Program Files\Microsoft SQL Server Management Studio 22\Release\Common7\IDE\SqlWorkbench.Interfaces.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="System.Xaml" />

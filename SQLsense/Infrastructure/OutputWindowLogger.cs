@@ -24,11 +24,15 @@ namespace SQLsense.Infrastructure
         public static void Log(string message)
         {
             System.Diagnostics.Debug.WriteLine($"[SQLsense Log] {message}");
+            string formatted = $"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}";
+            _pane?.OutputStringThreadSafe(formatted);
         }
 
         public static void LogError(string message, Exception ex)
         {
             System.Diagnostics.Debug.WriteLine($"[SQLsense ERROR] {message}. Exception: {ex.Message}");
+            string formatted = $"[{DateTime.Now:HH:mm:ss.fff}] ERROR: {message}. Exception: {ex.Message}{Environment.NewLine}";
+            _pane?.OutputStringThreadSafe(formatted);
         }
     }
 }
